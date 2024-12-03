@@ -29,7 +29,7 @@ jobs:
         run: dotnet restore
 
       - name: Build
-        run: dotnet build  /home/runner/work/Rentences/Rentences.sln --configuration Release --no-restore
+        run: dotnet build  /home/runner/work/Rentences/Rentences/Rentences.csproj --configuration Release --no-restore
 
       - name: Publish
         run: dotnet publish  /home/runner/work/Rentences/Rentences.sln --configuration Release --no-build --output ./publish
