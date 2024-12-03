@@ -26,13 +26,13 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Restore dependencies
-        run: dotnet restore  /home/runner/work/Rentences/Rentences.sln
+        run: dotnet restore  /home/runner/work/Rentences.sln
 
       - name: Build
-        run: dotnet build  /home/runner/work/Rentences/Rentences.sln --configuration Release --no-restore
+        run: dotnet build  /home/runner/work/Rentences.sln --configuration Release --no-restore
 
       - name: Publish
-        run: dotnet publish  /home/runner/work/Rentences/Rentences.sln --configuration Release --no-build --output ./publish
+        run: dotnet publish  /home/runner/work/Rentences.sln --configuration Release --no-build --output ./publish
 
       - name: Archive build artifacts
         uses: actions/upload-artifact@v3
