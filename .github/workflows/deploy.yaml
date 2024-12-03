@@ -19,23 +19,20 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-      - name: List directory tree
-        run: |
-          find /home/runner/work
-
+        
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
 
       - name: Restore dependencies
-        run: dotnet restore  /home/runner/work/Rentences.sln
+        run: dotnet restore  /home/runner/work/Rentences/Rentences/Rentences.sln
 
       - name: Build
-        run: dotnet build  /home/runner/work/Rentences.sln --configuration Release --no-restore
+        run: dotnet build  /home/runner/work/Rentences/Rentences/Rentences.sln --configuration Release --no-restore
 
       - name: Publish
-        run: dotnet publish  /home/runner/work/Rentences.sln --configuration Release --no-build --output ./publish
+        run: dotnet publish  /home/runner/work/Rentences/Rentences/Rentences.sln --configuration Release --no-build --output ./publish
 
       - name: Archive build artifacts
         uses: actions/upload-artifact@v3
