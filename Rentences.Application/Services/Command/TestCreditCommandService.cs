@@ -49,6 +49,6 @@ public class TestCreditCommandService : ICommandService
             .WithFooter("💗 This new version of Rentences wasn't possible without your testing & suggestions! 💗")
             .Build();
 
-        await message.Channel.SendMessageAsync(embed: gratitudeEmbed, allowedMentions: AllowedMentions.None);
+        await message.Thread.SendMessageAsync(embed: gratitudeEmbed, allowedMentions: AllowedMentions.None);
     }
 }

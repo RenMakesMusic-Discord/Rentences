@@ -36,6 +36,6 @@ public class TopWordsCommandService : ICommandService
             .WithColor(Color.Green)
             .Build();
 
-        await message.Channel.SendMessageAsync(embed: embed, allowedMentions: AllowedMentions.None);
+        await message.Thread.SendMessageAsync(embed: embed, allowedMentions: AllowedMentions.None);
     }
 }
