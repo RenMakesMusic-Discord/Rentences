@@ -11,4 +11,10 @@ namespace Rentences.Domain.Contracts
     public record struct SendDiscordMessage (string Message) :IRequest<ErrorOr<bool>> {
         public readonly string Message = Message;
     }
+    
+    // Extended version for embeds
+    public record struct SendDiscordMessageWithEmbed (string Message, Embed? Embed = null) :IRequest<ErrorOr<bool>> {
+        public readonly string Message = Message;
+        public readonly Embed? Embed = Embed;
+    }
 }

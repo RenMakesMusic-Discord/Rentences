@@ -1,6 +1,7 @@
 ﻿using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Rentences.Persistence;
+using Rentences.Persistence.Repositories;
 using System.Linq;
 using System.Text;
 using System.Threading;

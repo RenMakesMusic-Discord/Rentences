@@ -1,6 +1,7 @@
 using Discord;
 using Discord.WebSocket;
 using Rentences.Application;
+using Rentences.Persistence.Repositories;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -36,6 +37,6 @@ public class TopWordsCommandService : ICommandService
             .WithColor(Color.Green)
             .Build();
 
-        await message.Thread.SendMessageAsync(embed: embed, allowedMentions: AllowedMentions.None);
+        await message.Channel.SendMessageAsync(embed: embed, allowedMentions: AllowedMentions.None);
     }
 }

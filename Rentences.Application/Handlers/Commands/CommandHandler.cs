@@ -50,7 +50,7 @@ public class CommandHandler
             }
             else
             {
-                await message.Thread.SendMessageAsync("Command not recognized.");
+                await message.Channel.SendMessageAsync("Command not recognized.");
             }
         }
     }

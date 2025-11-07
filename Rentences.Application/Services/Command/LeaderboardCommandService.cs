@@ -24,6 +24,6 @@ public class LeaderboardCommandService : ICommandService
             .WithColor(Color.Blue)
             .Build();
 
-        await message.Thread.SendMessageAsync(embed: embed, allowedMentions: AllowedMentions.None);
+        await message.Channel.SendMessageAsync(embed: embed, allowedMentions: AllowedMentions.None);
     }
 }

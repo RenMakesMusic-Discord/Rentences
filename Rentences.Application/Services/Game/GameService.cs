@@ -13,6 +13,7 @@ public class GameService : IGameService
     private readonly ILogger<GameService> logger;
 
     private GameState CurrentGameState;
+    private readonly Random random = new Random();
 
     public GameService(IDictionary<Gamemodes, IGamemodeHandler> _games, ILogger<GameService> _logger)
     {
@@ -39,18 +40,29 @@ public class GameService : IGameService
     public async Task StartGame([Required]Gamemodes Game)
     {
         logger.LogInformation("[Game Management] A new Game has been requested to start");
-        if (currentGame != null && 
+        if (currentGame != null &&
             currentGame.GameState.CurrentState.Equals(GameStatus.IN_PROGRESS)) return;
 
         currentGame = games[Game];
         await currentGame.StartGame();
         return;
     }
+
+    public async Task StartRandomGame()
+    {
+        // Randomly select one of the three game modes with equal probability
+        var gameModes = new[] { Gamemodes.GAMEMODE_CASUAL, Gamemodes.GAMEMODE_LETTER_VOTE, Gamemodes.GAMEMODE_REVERSE_SENTENCE };
+        Gamemodes selectedGame = gameModes[random.Next(gameModes.Length)];
+        
+        logger.LogInformation($"[Game Management] Random game selected: {selectedGame} (equal chance for all games)");
+        await StartGame(selectedGame);
+    }
+
     public ErrorOr<bool> EndGame()
     {
         currentGame.EndGame();
-        currentGame.StartGame();
-
+        // Use random game selection for the next game
+        StartRandomGame();
         return true;
     }
 

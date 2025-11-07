@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Rentences.Domain.Definitions;
 using Rentences.Persistence;
+using Rentences.Persistence.Repositories;
 
 namespace Rentences.Application;
 
