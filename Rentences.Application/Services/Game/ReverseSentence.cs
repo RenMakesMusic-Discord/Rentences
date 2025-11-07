@@ -1,17 +1,17 @@
-﻿using Discord;
+using Discord;
 using Discord.WebSocket;
 using ErrorOr;
-using FluentValidation;
 using Microsoft.Extensions.Logging;
 using Rentences.Domain.Definitions;
 using Rentences.Domain.Definitions.Game;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace Rentences.Application.Services.Game
 {
-    public class Casual : IGamemodeHandler
+    public class ReverseSentence : IGamemodeHandler
     {
         private readonly ILogger _logger;
         private readonly IInterop _backend;
@@ -20,7 +20,7 @@ namespace Rentences.Application.Services.Game
         private ulong LastSenderId;
         private GameStatus gameStatus;
 
-        public Casual(ILogger<Casual> logger, IInterop Backend, DiscordConfiguration configuration, WordService wordService)
+        public ReverseSentence(ILogger<ReverseSentence> logger, IInterop Backend, DiscordConfiguration configuration, WordService wordService)
         {
             _logger = logger;
             _backend = Backend;
@@ -91,14 +91,12 @@ namespace Rentences.Application.Services.Game
                 string userTags = "";
                 List<ulong> authors = new List<ulong>();
                 LastSenderId = ulong.MinValue;
-                // Initialize an empty string for the generated message and user tags
-                generatedMessage = string.Empty;
-                userTags = string.Empty;
-
+                
                 // Initialize an empty string for the generated message and user tags
                 generatedMessage = string.Empty;
                 userTags = ">>> ";
 
+                // Collect all words and join into a single sentence
                 foreach (Word word in WordList.OrderBy(w => w.TimeStamp)) {
                     // Append the word's value to the generated message
                     generatedMessage += (" " + word.Value);
@@ -123,13 +121,16 @@ namespace Rentences.Application.Services.Game
                     userTags += topWordInfo + "\n";
                 }
 
+                // Reverse the sentence
+                string reversedMessage = ReverseSentenceLogic(generatedMessage);
+
                 // Append user tags to the generated message as a summary
-                generatedMessage += "\n";
+                reversedMessage += "\n";
 
                 var embed = new EmbedBuilder()
-                    .WithTitle("📝 Sentence Complete! 📝")
-                    .WithDescription($"**{preMessage}**\n# {CleanMessage(generatedMessage)}\n")
-                    .WithColor(Color.Green)
+                    .WithTitle("🔄 Reversed Sentence Complete! 🔄")
+                    .WithDescription($"**{preMessage}**\n# {CleanMessage(reversedMessage)}\n")
+                    .WithColor(Color.Purple)
                     .Build();
 
                 await StartGame(embed, userTags);
@@ -140,12 +141,90 @@ namespace Rentences.Application.Services.Game
             }
         }
 
+        private string ReverseSentenceLogic(string sentence)
+        {
+            if (string.IsNullOrWhiteSpace(sentence))
+                return sentence;
+
+            // Clean the sentence first
+            sentence = sentence.Trim();
+
+            // Extract punctuation and special characters
+            var openingPunct = new List<char>();
+            var closingPunct = new List<char>();
+            
+            // Find opening punctuation at the start
+            while (sentence.Length > 0 && "([{\"'".Contains(sentence[0]))
+            {
+                openingPunct.Add(sentence[0]);
+                sentence = sentence.Substring(1);
+            }
+
+            // Find closing punctuation at the end
+            while (sentence.Length > 0 && ")]}\"'!?.,:;".Contains(sentence[sentence.Length - 1]))
+            {
+                closingPunct.Insert(0, sentence[sentence.Length - 1]); // Insert at beginning to maintain order
+                sentence = sentence.Substring(0, sentence.Length - 1);
+            }
+
+            // Split into words
+            var words = sentence.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+            
+            if (words.Count == 0)
+                return sentence;
+
+            // Reverse the order of words
+            words.Reverse();
+
+            // Handle punctuation that was attached to words
+            for (int i = 0; i < words.Count; i++)
+            {
+                string word = words[i];
+                
+                // Extract trailing punctuation
+                var trailingPunct = new List<char>();
+                while (word.Length > 0 && "!?.,:;".Contains(word[word.Length - 1]))
+                {
+                    trailingPunct.Insert(0, word[word.Length - 1]);
+                    word = word.Substring(0, word.Length - 1);
+                }
+
+                // Extract leading punctuation
+                var leadingPunct = new List<char>();
+                while (word.Length > 0 && "([{\"'".Contains(word[0]))
+                {
+                    leadingPunct.Add(word[0]);
+                    word = word.Substring(1);
+                }
+
+                // If this is the first word, capitalize it
+                if (i == 0 && word.Length > 0)
+                {
+                    word = char.ToUpper(word[0]) + word.Substring(1);
+                }
+
+                // Reconstruct word with punctuation
+                words[i] = string.Join("", leadingPunct) + word + string.Join("", trailingPunct);
+            }
+
+            // Rebuild the sentence
+            string result = string.Join(" ", words);
+            
+            // Add closing punctuation at the end
+            result += string.Join("", closingPunct);
+            
+            // Add opening punctuation at the beginning
+            result = string.Join("", openingPunct) + result;
+
+            return result;
+        }
+
         private string CleanMessage(string message)
         {
             // Step 1: Extract and store tags with placeholders
-            var tagMatches = System.Text.RegularExpressions.Regex.Matches(message, @"<[^>]+>");
+            var tagMatches = Regex.Matches(message, @"<[^>]+>");
             var tags = new List<string>();
-            foreach (System.Text.RegularExpressions.Match match in tagMatches)
+            foreach (Match match in tagMatches)
             {
                 tags.Add(match.Value);
             }
@@ -168,18 +247,18 @@ namespace Rentences.Application.Services.Game
             }
 
             // Remove any space before punctuation (e.g., periods, commas, colons, semicolons, question marks, exclamation marks, parentheses)
-            message = System.Text.RegularExpressions.Regex.Replace(message, @"\s+([,.!?;:])", "$1");
+            message = Regex.Replace(message, @"\s+([,.!?;:])", "$1");
 
             // Ensure a single space after periods, commas, semicolons, colons, question marks, and exclamation marks
-            message = System.Text.RegularExpressions.Regex.Replace(message, @"([,.!?;:])\s*", "$1 ");
+            message = Regex.Replace(message, @"([,.!?;:])\s*", "$1 ");
 
             // Remove spaces inside parentheses and ensure proper spacing outside of them
-            message = System.Text.RegularExpressions.Regex.Replace(message, @"\s*\(\s*", " (");  // Remove spaces before or inside (
-            message = System.Text.RegularExpressions.Regex.Replace(message, @"\s*\)\s*", ") ");  // Remove spaces inside or after )
+            message = Regex.Replace(message, @"\s*\(\s*", " (");  // Remove spaces before or inside (
+            message = Regex.Replace(message, @"\s*\)\s*", ") ");  // Remove spaces inside or after )
 
             // Correct spacing around quotation marks
-            message = System.Text.RegularExpressions.Regex.Replace(message, @"\s*([“”\""])", "$1"); // Remove spaces before quotes
-            message = System.Text.RegularExpressions.Regex.Replace(message, @"([“”\""])\s*", "$1 "); // Ensure space after closing quotes
+            message = Regex.Replace(message, @"\s*([“”\""])", "$1"); // Remove spaces before quotes
+            message = Regex.Replace(message, @"([“”\""])\s*", "$1 "); // Ensure space after closing quotes
 
             // Trim any extra space at the end
             message = message.TrimEnd();
@@ -207,8 +286,8 @@ namespace Rentences.Application.Services.Game
         public async Task StartGame(string previousMessage)
         {
             var embed = new EmbedBuilder()
-                .WithDescription($"{previousMessage}\n\n🔄 A new game of **Rentences Casual** is about to begin! Get ready! 🎮")
-                .WithColor(Color.Blue)
+                .WithDescription($"{previousMessage}\n\n🔄 A new game of **Rentences Reverse Sentence** is about to begin! Get ready! 🎮")
+                .WithColor(Color.Purple)
                 .Build();
 
             WordList = new List<Word>();
@@ -219,8 +298,8 @@ namespace Rentences.Application.Services.Game
         public async Task StartGame()
         {
             var embed = new EmbedBuilder()
-                .WithDescription("🔄 A new game of **Rentences Casual** is about to begin! Get ready! 🎮")
-                .WithColor(Color.Blue)
+                .WithDescription("🔄 A new game of **Rentences Reverse Sentence** is about to begin! Get ready! 🎮")
+                .WithColor(Color.Purple)
                 .Build();
 
             WordList = new List<Word>();

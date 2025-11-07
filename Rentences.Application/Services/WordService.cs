@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Rentences.Domain.Definitions.Game;
 using Rentences.Persistence;
+using Rentences.Persistence.Repositories;
 
 namespace Rentences.Application.Services;
 

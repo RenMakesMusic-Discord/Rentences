@@ -1,4 +1,6 @@
-﻿using System;
+﻿namespace Rentences.Persistence.Repositories;
+
+using System;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Rentences.Domain.Definitions.Game;

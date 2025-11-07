@@ -1,0 +1,21 @@
+{
+  "TestDatabase": {
+    "ConnectionString": "Data Source=test_rentences.db"
+  },
+  "DiscordSimulation": {
+    "DefaultUserId": "123456789012345678",
+    "DefaultChannelId": "987654321098765432",
+    "DefaultGuildId": "112233445566778899"
+  },
+  "GameSettings": {
+    "DefaultGamemode": "GAMEMODE_CASUAL",
+    "TestWordList": [
+      "test", "word", "game", "discord", "bot", "validation"
+    ]
+  },
+  "Testing": {
+    "AutoCleanup": true,
+    "VerboseOutput": true,
+    "BatchTimeout": 300
+  }
+}

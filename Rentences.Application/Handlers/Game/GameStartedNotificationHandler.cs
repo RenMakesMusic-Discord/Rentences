@@ -3,6 +3,7 @@ using Rentences.Domain.Definitions;
 using MediatR;
 using System.Threading;
 using System.Threading.Tasks;
+using Rentences.Gateways.DiscordClient;
 
 namespace Rentences.Application.Handlers;
 public class GameStartedNotificationHandler : INotificationHandler<GameStartedNotification>

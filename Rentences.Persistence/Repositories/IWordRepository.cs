@@ -1,4 +1,6 @@
-﻿using Rentences.Domain.Definitions.Game;
+﻿namespace Rentences.Persistence.Repositories;
+
+using Rentences.Domain.Definitions.Game;
 
 public interface IWordRepository
 {

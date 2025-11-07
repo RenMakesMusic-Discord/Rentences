@@ -1,4 +1,5 @@
 ﻿using Rentences.Domain.Contracts.Tracking;
+using Rentences.Persistence.Repositories;
 
 namespace Rentences.Application.Handlers;
 

@@ -15,6 +15,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Rentences.Gateways.DiscordC
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Rentences.Tests", "Rentences.Tests\Rentences.Tests.csproj", "{8E028F24-4F41-4EED-A02B-6249D84952AF}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Rentences.Testing", "Rentences.Testing\Rentences.Testing.csproj", "{A5B8C9D2-3E4F-5A6B-7C8D-9E0F-1A2B-3C4D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -58,6 +60,12 @@ Global
 		{8E028F24-4F41-4EED-A02B-6249D84952AF}.Linux Release|Any CPU.Build.0 = Linux Release|Any CPU
 		{8E028F24-4F41-4EED-A02B-6249D84952AF}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8E028F24-4F41-4EED-A02B-6249D84952AF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A5B8C9D2-3E4F-5A6B-7C8D-9E0F-1A2B-3C4D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A5B8C9D2-3E4F-5A6B-7C8D-9E0F-1A2B-3C4D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A5B8C9D2-3E4F-5A6B-7C8D-9E0F-1A2B-3C4D}.Linux Release|Any CPU.ActiveCfg = Linux Release|Any CPU
+		{A5B8C9D2-3E4F-5A6B-7C8D-9E0F-1A2B-3C4D}.Linux Release|Any CPU.Build.0 = Linux Release|Any CPU
+		{A5B8C9D2-3E4F-5A6B-7C8D-9E0F-1A2B-3C4D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A5B8C9D2-3E4F-5A6B-7C8D-9E0F-1A2B-3C4D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
