@@ -1,12 +1,3 @@
-using Discord;
-using Discord.WebSocket;
-using Rentences.Application.Services.Game;
-using Rentences.Domain.Definitions;
-using Rentences.Application;
-using System;
-using System.Threading.Tasks;
-using Rentences.Application.Services;
-
 public class StaffReverseCommandService : ICommandService
 {
     private readonly IGameService _gameService;
