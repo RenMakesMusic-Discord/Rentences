@@ -1,22 +1,17 @@
-﻿using Microsoft.Extensions.Options;
-using Rentences.Domain.Definitions;
-using MediatR;
 using System.Threading;
 using System.Threading.Tasks;
+using MediatR;
+using Rentences.Domain.Definitions;
 using Rentences.Gateways.DiscordClient;
 
 namespace Rentences.Application.Handlers;
 
-public class GameStartedNotificationHandler : INotificationHandler<GameStartedNotification>
+public class GameStartedNotificationHandler(
+    DiscordInterop discord,
+    DiscordConfiguration discordConfig) : INotificationHandler<GameStartedNotification>
 {
-    private readonly DiscordConfiguration _discordConfig;
-    private readonly DiscordInterop _discord;
-
-    public GameStartedNotificationHandler(DiscordConfiguration discordConfig, DiscordInterop discord)
-    {
-        _discordConfig = discord ?? throw new ArgumentNullException(nameof(discordConfig));
-        _discord = discord ?? throw new ArgumentNullException(nameof(discord));
-    }
+    private readonly DiscordInterop _discord = discord ?? throw new ArgumentNullException(nameof(discord));
+    private readonly DiscordConfiguration _discordConfig = discordConfig ?? throw new ArgumentNullException(nameof(discordConfig));
 
     public async Task Handle(GameStartedNotification notification, CancellationToken cancellationToken)
     {
@@ -25,12 +20,12 @@ public class GameStartedNotificationHandler : INotificationHandler<GameStartedNo
 
         if (string.IsNullOrWhiteSpace(configuredChannelId))
         {
-            throw new InvalidOperationException("Discord ChannelId is not configured. Cannot send game started notification.");
+            throw new InvalidOperationException("Discord ChannelId is not configured. Ensure 'DiscordConfiguration:ChannelId' is set in appsettings.json.");
         }
 
         if (!ulong.TryParse(configuredChannelId, out var channelId))
         {
-            throw new InvalidOperationException($"Discord ChannelId '{configuredChannelId}' is invalid. Cannot send game started notification.");
+            throw new InvalidOperationException($"Discord ChannelId '{configuredChannelId}' is invalid. Ensure 'DiscordConfiguration:ChannelId' is a valid ulong.");
         }
 
         // Use strongly-typed configuration-based ChannelId; no overrides or fallbacks.
