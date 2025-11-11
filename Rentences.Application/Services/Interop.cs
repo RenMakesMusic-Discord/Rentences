@@ -28,7 +28,19 @@ namespace Rentences.Application.Services
 
         public async Task<ErrorOr<ulong>> SendMessage(SendDiscordMessage command)
         {
-            var channelId = ulong.Parse(_discordConfiguration.ChannelId);
+            // Always use ChannelId from configuration; validate for clearer failures.
+            var configuredChannelId = _discordConfiguration.ChannelId;
+
+            if (string.IsNullOrWhiteSpace(configuredChannelId))
+            {
+                return Error.Failure(description: "Discord ChannelId is not configured.");
+            }
+
+            if (!ulong.TryParse(configuredChannelId, out var channelId))
+            {
+                return Error.Failure(description: $"Discord ChannelId '{configuredChannelId}' is invalid.");
+            }
+
             var result = await _discordInterop.SendMessageAsync(channelId, command.Message);
             return result;
         }
