@@ -136,12 +136,14 @@ namespace Rentences.Application.Services.Game
             await AddWord(w);
             if (Word.ContainsValidTermination(w))
             {
+                // Word-based end condition reached: finalize letters sentence and notify.
                 gameStatus = GameStatus.ENDED;
                 GameState = new GameState
                 {
-                    GameId = GameState.GameId,
+                    GameId = GameState.GameId == Guid.Empty ? Guid.NewGuid() : GameState.GameId,
                     CurrentState = GameStatus.ENDED
                 };
+
                 await _backend.SendGameMessageReaction(new() { socketMessage = message, emoji = _config.WinEmoji });
                 await EndGame();
             }
@@ -241,11 +243,8 @@ namespace Rentences.Application.Services.Game
                     .WithColor(Color.Green)
                     .Build();
 
-                // Emit standardized game ended notification with the final embed.
-                // GameService.EndGameFromNaturalFlowAsync will:
-                // - Validate GameId
-                // - Ensure idempotency using _lastCompletedGameId
-                // - End the game under gameLock and start the next one after release.
+                // Emit standardized game ended notification with the final embed so the
+                // completed sentence is always displayed at the end of Letters.
                 var endMessage = embed.Description ?? "Letters game finished.";
                 await _mediator.Send(new GameEndedNotification(GameState, endMessage));
             }
@@ -298,11 +297,13 @@ namespace Rentences.Application.Services.Game
 
         public async Task StartGame(Embed previousMessage, string userTags)
         {
+            // Ignore previous game summary for this mode; always start a fresh Letters voting phase.
             await StartVotingPhase();
         }
 
         public async Task StartGame(string previousMessage)
         {
+            // Explicit string-based start should not reuse ReverseSentence text.
             await StartVotingPhase();
         }
 
