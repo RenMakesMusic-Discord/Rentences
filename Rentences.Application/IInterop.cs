@@ -9,6 +9,7 @@ public interface IInterop
     public Task<ErrorOr<MessageReceivedResponse>> SendMessageReceivedCommand(MessageReceivedCommand command);
     public Task<ErrorOr<MessageDeletedResponse>> SendMessageDeletedCommand(MessageDeletedCommand command);
     public Task SendGameStartedNotification(GameStartedNotification command);
+    public Task<GameEndedNotificationResponse> SendGameEndedNotification(GameEndedNotification notification);
     public Task<ErrorOr<ulong>> SendMessage(SendDiscordMessage command);
     public Task<ErrorOr<bool>> SendMessageWithEmbed(SendDiscordMessageWithEmbed command);
     public Task<ErrorOr<GameMessageReactionResponse>> SendGameMessageReaction(GameMessageReactionCommand command);
