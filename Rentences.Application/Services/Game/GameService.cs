@@ -42,8 +42,19 @@ public class GameService : IGameService, IDisposable
         // Initialize cleanup timer for force termination scenarios
         cleanupTimer = new Timer(async _ => await PerformPeriodicCleanup(), null,
             TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
-        
-        _ = Task.Run(() => StartGame(Gamemodes.GAMEMODE_CASUAL));
+
+        // Start initial game explicitly for our single server/channel.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await StartGameWithForceTerminationAsync(Gamemodes.GAMEMODE_CASUAL, "Initial startup");
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "[Game Service] Failed to start initial game");
+            }
+        });
     }
 
     public void Dispose()
@@ -79,13 +90,14 @@ public class GameService : IGameService, IDisposable
 
             if (currentGame == null)
             {
-                // No active game; ignore without blocking the gateway.
+                // No active game; ignore.
                 return Error.Failure("No active game");
             }
 
-            if (currentGame.GameState.CurrentState != GameStatus.IN_PROGRESS)
+            var state = currentGame.GameState;
+            if (state.CurrentState != GameStatus.IN_PROGRESS)
             {
-                // Game exists but not in progress; ignore safely.
+                // Game exists but not in progress; ignore.
                 return Error.Failure("Game is not in progress");
             }
 
@@ -294,28 +306,35 @@ public class GameService : IGameService, IDisposable
 
         try
         {
-            logger.LogInformation($"[Game Service] Force terminating current game. Reason: {reason}");
-            
-            // Attempt graceful termination first: handler should set GameState to ENDED and not start another game.
+            logger.LogInformation("[Game Service] Force terminating current game. Reason: {Reason}", reason);
+
             try
             {
+                // Let the handler mark ENDED and emit at most one GameEndedNotification.
                 await currentGame.EndGame();
                 logger.LogInformation("[Game Service] Graceful termination completed");
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "[Game Service] Graceful termination failed, proceeding with force termination");
+                logger.LogWarning(ex, "[Game Service] Graceful termination failed, proceeding with hard clear");
             }
 
-            // Clear references to ensure complete cleanup
+            // Mark this game as completed for natural-flow idempotency.
+            var completedId = currentGame.GameState.GameId;
+            if (completedId != Guid.Empty)
+            {
+                _lastCompletedGameId = completedId;
+            }
+
+            // Clear reference: for our single server/channel there is now no active game.
             currentGame = null;
-            
-            logger.LogInformation("[Game Service] Force termination completed successfully");
+
+            logger.LogInformation("[Game Service] Force termination completed; no active game remains.");
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, $"[Game Service] Error during force termination: {reason}");
-            
+            logger.LogError(ex, "[Game Service] Error during force termination: {Reason}", reason);
+
             // Force clear reference even if termination failed
             currentGame = null;
             logger.LogWarning("[Game Service] Cleared current game reference despite termination error");
