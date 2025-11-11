@@ -46,16 +46,29 @@ public class StaffLettersCommandService : ICommandService
                 return;
             }
 
-            // User has staff role, start the letter voting game
-            await _gameService.StartGame(Gamemodes.GAMEMODE_LETTER_VOTE);
-            
-            var successEmbed = new EmbedBuilder()
-                .WithTitle("🎮 Game Started")
-                .WithDescription("Letter voting game has been started by staff!")
-                .WithColor(Color.Green)
-                .Build();
+            try
+            {
+                // User has staff role, force terminate any existing game and start the letter voting game
+                await _gameService.StartGameWithForceTerminationAsync(Gamemodes.GAMEMODE_LETTER_VOTE, "Staff letters game command");
                 
-            await message.Channel.SendMessageAsync(embed: successEmbed, allowedMentions: AllowedMentions.None);
+                var successEmbed = new EmbedBuilder()
+                    .WithTitle("🎮 Game Started")
+                    .WithDescription("Letter voting game has been started by staff! Any existing game has been terminated.")
+                    .WithColor(Color.Green)
+                    .Build();
+                    
+                await message.Channel.SendMessageAsync(embed: successEmbed, allowedMentions: AllowedMentions.None);
+            }
+            catch (Exception ex)
+            {
+                var errorEmbed = new EmbedBuilder()
+                    .WithTitle("❌ Game Error")
+                    .WithDescription($"Failed to start letter voting game: {ex.Message}")
+                    .WithColor(Color.Red)
+                    .Build();
+                    
+                await message.Channel.SendMessageAsync(embed: errorEmbed, allowedMentions: AllowedMentions.None);
+            }
         }
         else
         {

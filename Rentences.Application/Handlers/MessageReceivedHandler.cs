@@ -2,7 +2,8 @@
 
 using Microsoft.Extensions.Logging;
 using Rentences.Application.Services;
-
+using System;
+using System.Threading.Tasks;
 
 namespace Rentences.Application.Handlers;
 public class MessageReceivedHandler : IRequestHandler<MessageReceivedCommand, MessageReceivedResponse> {
@@ -16,12 +17,19 @@ public class MessageReceivedHandler : IRequestHandler<MessageReceivedCommand, Me
         logger = _logger;
         this.gameService = gameService; 
     }
-    public Task<MessageReceivedResponse> Handle(MessageReceivedCommand request, CancellationToken cancellationToken) {
+    public async Task<MessageReceivedResponse> Handle(MessageReceivedCommand request, CancellationToken cancellationToken) {
        // logger.LogInformation("Received the following message ["+request.message.Id+"] " + request.message.Content);
-        gameService.PerformAddAction(request.message);
+        try
+        {
+            await gameService.PerformAddActionAsync(request.message);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error processing message in game service");
+        }
 
         MessageReceivedResponse response = new() { };
-        return Task.FromResult(response);
+        return response;
     }
 
 }

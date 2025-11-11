@@ -1,10 +1,10 @@
 ﻿namespace Rentences.Persistence.Repositories;
 
-using System;
-using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
-using Rentences.Domain.Definitions.Game;
-using Rentences.Persistence;
+ using System;
+ using System.Threading.Tasks;
+ using Microsoft.EntityFrameworkCore;
+ using Rentences.Domain.Definitions.Game;
+ using Rentences.Persistence;
 
 public class WordRepository : IWordRepository
 {
@@ -23,7 +23,24 @@ public class WordRepository : IWordRepository
 
     public async Task TrackWordUsageAsync(string wordValue)
     {
-        var strippedWord = wordValue.ToLower(); // Case insensitive tracking
+        // Normalize for consistent tracking (matches NormalizeWord rules)
+        if (string.IsNullOrWhiteSpace(wordValue))
+            return;
+
+        // Lowercase and strip leading/trailing punctuation/separators, preserve internal apostrophes
+        int start = 0;
+        int end = wordValue.Length - 1;
+
+        while (start <= end && !char.IsLetterOrDigit(wordValue[start]) && wordValue[start] != '\'')
+            start++;
+
+        while (end >= start && !char.IsLetterOrDigit(wordValue[end]) && wordValue[end] != '\'')
+            end--;
+
+        if (start > end)
+            return;
+
+        var strippedWord = wordValue.Substring(start, end - start + 1).ToLowerInvariant();
 
         var wordUsage = await _dbContext.WordUsages.SingleOrDefaultAsync(w => w.WordValue == strippedWord);
         if (wordUsage == null)
@@ -63,12 +80,42 @@ public class WordRepository : IWordRepository
     {
         return _dbContext.Words
             .Where(w => w.Author == userId) // Filter by the specific user
-            .GroupBy(w => w.Value)          // Group by word value
+            // Normalize for aggregation: lowercase + strip leading/trailing punctuation/separators, preserve internal apostrophes
+            .Select(w => new
+            {
+                Original = w,
+                Normalized = NormalizeForAggregation(w.Value)
+            })
+            .Where(x => !string.IsNullOrEmpty(x.Normalized))
+            .GroupBy(x => x.Normalized)          // Group by normalized word value
             .OrderByDescending(g => g.Count()) // Order by usage count in descending order
-            .Take(topCount)                // Take the top N results
+            .ThenBy(g => g.Key)               // Stable ordering for ties
+            .Take(topCount)                   // Take the top N results
             .Select(g => new Word
             {
-                Value = g.Key,
+                Value = g.Key,                // Expose normalized value as the word
             });
+    }
+
+    private static string NormalizeForAggregation(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        value = value.Trim();
+
+        int start = 0;
+        int end = value.Length - 1;
+
+        while (start <= end && !char.IsLetterOrDigit(value[start]) && value[start] != '\'')
+            start++;
+
+        while (end >= start && !char.IsLetterOrDigit(value[end]) && value[end] != '\'')
+            end--;
+
+        if (start > end)
+            return string.Empty;
+
+        return value.Substring(start, end - start + 1).ToLowerInvariant();
     }
 }

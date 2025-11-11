@@ -29,15 +29,28 @@ public class CasualCommandService : ICommandService
             return;
         }
 
-        // Start the casual game
-        await _gameService.StartGame(Gamemodes.GAMEMODE_CASUAL);
-        
-        var successEmbed = new EmbedBuilder()
-            .WithTitle("🎮 Game Started")
-            .WithDescription("Casual game has been started! Everyone is welcome to join in the fun.")
-            .WithColor(Color.Green)
-            .Build();
+        try
+        {
+            // Force terminate any existing game and start the casual game
+            await _gameService.StartGameWithForceTerminationAsync(Gamemodes.GAMEMODE_CASUAL, "Casual game command");
             
-        await message.Channel.SendMessageAsync(embed: successEmbed, allowedMentions: AllowedMentions.None);
+            var successEmbed = new EmbedBuilder()
+                .WithTitle("🎮 Game Started")
+                .WithDescription("Casual game has been started! Any existing game has been terminated and this new game is now active.")
+                .WithColor(Color.Green)
+                .Build();
+                
+            await message.Channel.SendMessageAsync(embed: successEmbed, allowedMentions: AllowedMentions.None);
+        }
+        catch (Exception ex)
+        {
+            var errorEmbed = new EmbedBuilder()
+                .WithTitle("❌ Game Error")
+                .WithDescription($"Failed to start casual game: {ex.Message}")
+                .WithColor(Color.Red)
+                .Build();
+                
+            await message.Channel.SendMessageAsync(embed: errorEmbed, allowedMentions: AllowedMentions.None);
+        }
     }
 }

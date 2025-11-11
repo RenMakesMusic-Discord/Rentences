@@ -5,6 +5,8 @@ using ErrorOr;
 using Microsoft.Extensions.Logging;
 using Rentences.Domain.Definitions;
 using Rentences.Domain.Definitions.Game;
+using Rentences.Domain.Contracts;
+using MediatR;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -19,6 +21,7 @@ namespace Rentences.Application.Services.Game
         private readonly DiscordConfiguration _config;
         private readonly WordService _wordService;
         private readonly Lazy<IGameService> _gameService;
+        private readonly IMediator _mediator;
         private ulong LastSenderId;
         private GameStatus gameStatus;
         
@@ -43,17 +46,31 @@ namespace Rentences.Application.Services.Game
             {'U', "🇺"}, {'V', "🇻"}, {'W', "🇼"}, {'X', "🇽"}, {'Y', "🇾"}, {'Z', "🇿"}
         };
 
-        public LetterVoting(ILogger<LetterVoting> logger, IInterop Backend, DiscordConfiguration configuration, WordService wordService, Lazy<IGameService> gameService)
+        public LetterVoting(
+            ILogger<LetterVoting> logger,
+            IInterop Backend,
+            DiscordConfiguration configuration,
+            WordService wordService,
+            Lazy<IGameService> gameService,
+            IMediator mediator)
         {
             _logger = logger;
             _backend = Backend;
             _config = configuration;
             _wordService = wordService;
             _gameService = gameService;
+            _mediator = mediator;
             WordList = new List<Word>();
             votingCancellationTokenSource = new CancellationTokenSource();
             gameChannelId = ulong.Parse(configuration.ChannelId);
-            
+
+            // Initialize shared game state
+            GameState = new GameState
+            {
+                GameId = Guid.NewGuid(),
+                CurrentState = GameStatus.VOTING
+            };
+
             // Initialize available letters (A-Z, excluding Q, X, Z for simplicity)
             for (char c = 'A'; c <= 'Z'; c++)
             {
@@ -70,7 +87,7 @@ namespace Rentences.Application.Services.Game
         public async Task<ErrorOr<bool>> AddMessage(SocketMessage message)
         {
             // Only allow messages during the main game phase, not during voting
-            if (gameStatus != GameStatus.IN_PROGRESS)
+            if (gameStatus != GameStatus.IN_PROGRESS || GameState.CurrentState != GameStatus.IN_PROGRESS)
             {
                 await FailMessage(message);
                 return Error.Validation("Game Status", "Game is not currently accepting words.");
@@ -109,6 +126,11 @@ namespace Rentences.Application.Services.Game
             if (Word.ContainsValidTermination(w))
             {
                 gameStatus = GameStatus.ENDED;
+                GameState = new GameState
+                {
+                    GameId = GameState.GameId,
+                    CurrentState = GameStatus.ENDED
+                };
                 await _backend.SendGameMessageReaction(new() { socketMessage = message, emoji = _config.WinEmoji });
                 await EndGame();
             }
@@ -145,13 +167,20 @@ namespace Rentences.Application.Services.Game
         {
             try
             {
+                // Ensure terminal state
                 gameStatus = GameStatus.ENDED;
+                GameState = new GameState
+                {
+                    GameId = GameState.GameId,
+                    CurrentState = GameStatus.ENDED
+                };
+
                 string generatedMessage = "";
                 string preMessage = "The players have constructed the following sentence:";
                 string userTags = "";
                 List<ulong> authors = new List<ulong>();
                 LastSenderId = ulong.MinValue;
-                
+
                 generatedMessage = string.Empty;
                 userTags = ">>> ";
 
@@ -177,11 +206,13 @@ namespace Rentences.Application.Services.Game
 
                 var embed = new EmbedBuilder()
                     .WithTitle("📝 Sentence Complete! 📝")
-                    .WithDescription($"**{preMessage}**\n# {CleanMessage(generatedMessage)}\n")
+                    .WithDescription($"**{preMessage}**\n# {CleanMessage(generatedMessage)}\n{userTags}")
                     .WithColor(Color.Green)
                     .Build();
 
-                await StartGame(embed, userTags);
+                // Emit standardized game ended notification with the final embed
+                var endMessage = embed.Description ?? "Letters game finished.";
+                await _mediator.Send(new GameEndedNotification(GameState, endMessage));
             }
             catch (Exception ex)
             {
@@ -249,6 +280,11 @@ namespace Rentences.Application.Services.Game
         {
             WordList = new List<Word>();
             gameStatus = GameStatus.VOTING;
+            GameState = new GameState
+            {
+                GameId = GameState.GameId,
+                CurrentState = GameStatus.VOTING
+            };
             selectedLetter = null;
             votingCancellationTokenSource = new CancellationTokenSource();
             voteCounts.Clear();
@@ -391,7 +427,12 @@ namespace Rentences.Application.Services.Game
         private async Task ProcessVoteResults()
         {
             gameStatus = GameStatus.PROCESSING_VOTES;
-            
+            GameState = new GameState
+            {
+                GameId = GameState.GameId,
+                CurrentState = GameStatus.PROCESSING_VOTES
+            };
+
             try
             {
                 // Count actual votes from Discord reactions
@@ -421,9 +462,18 @@ namespace Rentences.Application.Services.Game
                 
                 if (!hasVotes)
                 {
-                    // No votes received, fallback to casual mode
-                    await _backend.SendMessage(new SendDiscordMessage("📊 No votes received! Falling back to Casual mode for this round."));
-                    await FallbackToCasual();
+                    // No votes received, treat as proper end of Letters and let GameService decide next game
+                    GameState = new GameState
+                    {
+                        GameId = GameState.GameId,
+                        CurrentState = GameStatus.ENDED
+                    };
+                    gameStatus = GameStatus.ENDED;
+
+                    await _mediator.Send(new GameEndedNotification(
+                        GameState,
+                        "📊 No votes received for Letters mode. Ending Letters game."));
+
                     return;
                 }
 
@@ -444,6 +494,11 @@ namespace Rentences.Application.Services.Game
 
                 await _backend.SendGameStartedNotification(new(GameState, resultEmbed));
                 gameStatus = GameStatus.IN_PROGRESS;
+                GameState = new GameState
+                {
+                    GameId = GameState.GameId,
+                    CurrentState = GameStatus.IN_PROGRESS
+                };
             }
             catch (Exception ex)
             {
@@ -454,15 +509,26 @@ namespace Rentences.Application.Services.Game
 
         private async Task FallbackToCasual()
         {
+            // Preserve legacy helper but align with lifecycle:
+            // mark this Letters instance as ended; GameService should control what runs next.
             gameStatus = GameStatus.ENDED;
-            
+            GameState = new GameState
+            {
+                GameId = GameState.GameId,
+                CurrentState = GameStatus.ENDED
+            };
+
             try
             {
-                await _gameService.Value.StartGame(Gamemodes.GAMEMODE_CASUAL);
+                // No automatic game switch here to avoid violating lifecycle assumptions.
+                // If called, just emit a generic end notification once.
+                await _mediator.Send(new GameEndedNotification(
+                    GameState,
+                    "Letters game ended; please start a new mode manually or via GameService."));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error falling back to casual mode");
+                _logger.LogError(ex, "Error during Letters fallback handling");
             }
         }
 

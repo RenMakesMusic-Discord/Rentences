@@ -1,9 +1,12 @@
 using Discord;
 using Discord.WebSocket;
+// ReSharper disable once CheckNamespace
 using Rentences.Application;
 using Rentences.Persistence.Repositories;
 using System.Linq;
 using System.Threading.Tasks;
+
+// ReSharper disable once CheckNamespace
 
 public class TopWordsCommandService : ICommandService
 {

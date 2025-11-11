@@ -3,6 +3,41 @@ using System.Text.RegularExpressions;
 
 public static class StringExtensions
 {
+    public static string NormalizeWord(this string word)
+    {
+        if (string.IsNullOrWhiteSpace(word))
+            return string.Empty;
+
+        // Trim leading/trailing whitespace
+        word = word.Trim();
+
+        // Preserve internal apostrophes (e.g., it's, don't) but strip leading/trailing punctuation/separators
+        // Allowed internal chars: letters, digits, apostrophe
+        // We strip leading/trailing characters that are not letter/digit/apostrophe
+        int start = 0;
+        int end = word.Length - 1;
+
+        while (start <= end && !IsWordCoreChar(word[start]))
+            start++;
+
+        while (end >= start && !IsWordCoreChar(word[end]))
+            end--;
+
+        if (start > end)
+            return string.Empty;
+
+        var core = word[start..(end + 1)];
+
+        // Lowercase for case-insensitive comparison
+        return core.ToLowerInvariant();
+    }
+
+    private static bool IsWordCoreChar(char c)
+    {
+        // Letters, digits, and apostrophe are considered core word characters
+        return char.IsLetterOrDigit(c) || c == '\'';
+    }
+
     public static string CleanMessage(this string message)
     {
         // Step 1: Extract and store tags with placeholders
@@ -41,8 +76,8 @@ public static class StringExtensions
         message = Regex.Replace(message, @"\s*\)\s*", ") ");  // Remove spaces inside or after )
 
         // Correct spacing around quotation marks
-        message = Regex.Replace(message, @"\s*([“”\""])", "$1"); // Remove spaces before quotes
-        message = Regex.Replace(message, @"([“”\""])\s*", "$1 "); // Ensure space after closing quotes
+        message = Regex.Replace(message, @"\s*([ï¿½ï¿½\""])", "$1"); // Remove spaces before quotes
+        message = Regex.Replace(message, @"([ï¿½ï¿½\""])\s*", "$1 "); // Ensure space after closing quotes
 
         // Trim any extra space at the end
         message = message.TrimEnd();

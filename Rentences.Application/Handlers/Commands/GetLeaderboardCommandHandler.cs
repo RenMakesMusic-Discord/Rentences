@@ -34,10 +34,14 @@ public class GetLeaderboardCommandHandler : IRequestHandler<GetLeaderboardComman
             var user = topUsers[i];
 
             var topWord = _wordRepository.GetTopWordsByUser(user.UserId, 1).FirstOrDefault();
-            if(topWord == null)
+            if (topWord == null || string.IsNullOrWhiteSpace(topWord.Value))
+            {
                 sb.AppendLine($"{i + 1}. <@{user.UserId}> - {user.TotalWordsAdded} words");
+            }
             else
+            {
                 sb.AppendLine($"{i + 1}. <@{user.UserId}> - {user.TotalWordsAdded} words | Top Word ({topWord.Value})");
+            }
         }
 
         return sb.ToString();

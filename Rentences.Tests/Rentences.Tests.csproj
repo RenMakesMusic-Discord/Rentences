@@ -19,7 +19,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Rentences.Application\Rentences.Application.csproj" />
     <ProjectReference Include="..\Rentences.Domain\Rentences.Domain.csproj" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <PackageReference Include="Moq" Version="4.20.70" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
   </ItemGroup>
 
   <ItemGroup>

@@ -38,7 +38,7 @@ internal class Program
             {
                 services.AddPersistence(hostContext.Configuration);
                 services.AddDiscordServices(hostContext.Configuration);
-                services.RegisterApplicationServices();
+                services.RegisterApplicationServices(hostContext.Configuration);
                 services.AddSingleton<DiscordListener>();
                 services.AddHostedService<DiscordListener>();
             }).UseDefaultServiceProvider(options => options.ValidateScopes = false);

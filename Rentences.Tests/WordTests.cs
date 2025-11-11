@@ -7,6 +7,19 @@ namespace Rentences.Tests
     public class WordTests
     {
         [Theory]
+        [InlineData("Hello", "hello")]
+        [InlineData("hello", "hello")]
+        [InlineData("HELLO!", "hello")]
+        [InlineData("hello!!!", "hello")]
+        [InlineData("  HeLLo,", "hello")]
+        [InlineData("it's", "it's")]
+        [InlineData("it's!", "it's")]
+        public void NormalizeWord_ShouldNormalizeCaseAndPunctuation(string input, string expected)
+        {
+            var normalized = input.NormalizeWord();
+            normalized.Should().Be(expected);
+        }
+        [Theory]
         [InlineData((ulong)1, "", (ulong)1)] // Empty value
         [InlineData((ulong)1, "   ", (ulong)1)] // Whitespace value
         [InlineData((ulong)1, "hello world", (ulong)1)] // Contains space
