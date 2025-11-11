@@ -19,7 +19,17 @@ internal class GameEndedNotificationHandler(
     async Task<GameEndedNotificationResponse> IRequestHandler<GameEndedNotification, GameEndedNotificationResponse>.Handle(GameEndedNotification request, CancellationToken cancellationToken)
     {
         // 1) Announce logical end of the game to players.
-        await _discord.SendMessageAsync(ulong.Parse(_discordConfig.Value.ChannelId), request.EndMessage);
+        if (string.IsNullOrWhiteSpace(_discordConfig.Value.ChannelId))
+        {
+            throw new InvalidOperationException("Discord ChannelId is not configured. Cannot send game ended notification.");
+        }
+
+        if (!ulong.TryParse(_discordConfig.Value.ChannelId, out var channelId))
+        {
+            throw new InvalidOperationException($"Discord ChannelId '{_discordConfig.Value.ChannelId}' is invalid. Cannot send game ended notification.");
+        }
+
+        await _discord.SendMessageAsync(channelId, request.EndMessage);
 
         // 2) Delegate lifecycle completion + auto-start to GameService.
         //    This is the single orchestrated path for natural game completion.
