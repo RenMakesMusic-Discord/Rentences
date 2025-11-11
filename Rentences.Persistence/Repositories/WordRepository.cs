@@ -107,6 +107,11 @@ public class WordRepository : IWordRepository
 
         value = value.Trim();
 
+        // Filter out Discord custom emoji markup such as <:name:id> or <a:name:id>
+        // This is done before further normalization so these tokens are excluded from aggregation.
+        if (IsDiscordCustomEmoji(value))
+            return string.Empty;
+
         int start = 0;
         int end = value.Length - 1;
 
@@ -120,5 +125,54 @@ public class WordRepository : IWordRepository
             return string.Empty;
 
         return value.Substring(start, end - start + 1).ToLowerInvariant();
+    }
+
+    private static bool IsDiscordCustomEmoji(string value)
+    {
+        // Expected formats:
+        //   <:name:id>
+        //   <a:name:id>
+        // We avoid regex and use simple structural checks to keep this lightweight.
+
+        if (value.Length < 8) // minimal plausible length, e.g. "<:a:1>"
+            return false;
+
+        if (value[0] != '<' || value[^1] != '>')
+            return false;
+
+        var inner = value.AsSpan(1, value.Length - 2); // strip surrounding < >
+
+        // Animated: a:name:id
+        // Static:   :name:id (note that original has leading ':' after '<')
+        int firstColon = inner.IndexOf(':');
+        if (firstColon <= 0 || firstColon == inner.Length - 1)
+            return false;
+
+        bool isAnimated = inner[0] == 'a';
+
+        // For animated, we expect "a:name:id" -> firstColon after 'a'
+        // For static, we expect ":name:id"    -> firstColon at 0 is invalid due to check above
+        if (isAnimated && firstColon != 1)
+            return false;
+
+        // There must be a second colon separating name and id
+        int secondColon = inner.Slice(firstColon + 1).IndexOf(':');
+        if (secondColon <= 0)
+            return false;
+
+        secondColon += firstColon + 1;
+
+        if (secondColon >= inner.Length - 1)
+            return false;
+
+        // Ensure id part is all digits
+        var idSpan = inner.Slice(secondColon + 1);
+        foreach (var ch in idSpan)
+        {
+            if (!char.IsDigit(ch))
+                return false;
+        }
+
+        return idSpan.Length > 0;
     }
 }

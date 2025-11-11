@@ -337,23 +337,30 @@ public class GameService : IGameService, IDisposable
     }
 
     /// <summary>
-    /// Internal async version of EndGame for legacy wrapper
+    /// Internal async version of EndGame for legacy wrapper and centralized flow.
+    /// This method:
+    /// - Assumes the handler will finalize its own state when asked,
+    /// - Clears the currentGame reference,
+    /// - Selects and starts the next natural game.
     /// </summary>
     private async Task<ErrorOr<bool>> EndGameInternalAsync()
     {
-        await gameLock.WaitAsync();
+        // NOTE: Caller is responsible for taking the semaphore. This method must
+        // NOT acquire or release gameLock itself, to allow orchestration flows
+        // like EndGameFromNaturalFlowAsync to compose safely without deadlocks.
+        if (currentGame == null)
+        {
+            logger.LogWarning("[Game Service] Attempted to end game but no current game exists");
+            return Error.Failure("No active game");
+        }
+
         try
         {
-            if (currentGame == null)
-            {
-                logger.LogWarning("[Game Service] Attempted to end game but no current game exists");
-                return Error.Failure("No active game");
-            }
-
             // Capture last mode before ending/clearing
             var lastMode = GetCurrentGameMode() ?? Gamemodes.GAMEMODE_CASUAL;
 
-            // Ask handler to finalize only; it must set GameState.CurrentState = ENDED and must NOT start a new game.
+            // Ask handler to finalize only; it must set GameState.CurrentState = ENDED
+            // and MUST NOT start a new game.
             await currentGame.EndGame();
 
             // Clear current game; GameState is authoritative and now ENDED.
@@ -377,6 +384,66 @@ public class GameService : IGameService, IDisposable
         {
             logger.LogError(ex, "[Game Service] Error ending game");
             return Error.Failure($"Failed to end game: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Centralized lifecycle hook for natural game completion.
+    /// Called by notification handlers once a game has logically ended and
+    /// been announced (e.g., via GameEndedNotification).
+    /// </summary>
+    public async Task<ErrorOr<bool>> EndGameFromNaturalFlowAsync(GameState finalState, string endMessage)
+    {
+        await gameLock.WaitAsync();
+        try
+        {
+            if (currentGame == null)
+            {
+                logger.LogWarning("[Game Service] Natural end called but no current game exists");
+                return Error.Failure("No active game");
+            }
+
+            var activeState = currentGame.GameState;
+
+            // Ensure the signal corresponds to the active game round where possible.
+            if (activeState.GameId != Guid.Empty &&
+                finalState.GameId != Guid.Empty &&
+                activeState.GameId != finalState.GameId)
+            {
+                logger.LogWarning(
+                    "[Game Service] Natural end signal ignored: GameId mismatch. Active={ActiveId}, Final={FinalId}",
+                    activeState.GameId, finalState.GameId);
+                return Error.Failure("Mismatched game id");
+            }
+
+            // Idempotency: if already ENDED and currentGame is null, nothing to do.
+            if (activeState.CurrentState == GameStatus.ENDED && currentGame == null)
+            {
+                logger.LogInformation("[Game Service] Natural end called but already finalized; no action taken.");
+                return true;
+            }
+
+            // Ensure the handler is marked ENDED before running the internal pipeline.
+            if (currentGame.GameState.CurrentState != GameStatus.ENDED)
+            {
+                currentGame.GameState = new GameState
+                {
+                    GameId = activeState.GameId == Guid.Empty
+                        ? (finalState.GameId == Guid.Empty ? Guid.NewGuid() : finalState.GameId)
+                        : activeState.GameId,
+                    CurrentState = GameStatus.ENDED
+                };
+            }
+
+            logger.LogInformation("[Game Service] Processing natural game end: {Message}", endMessage);
+
+            // Run the shared pipeline (does NOT manage lock itself).
+            return await EndGameInternalAsync();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "[Game Service] Error in EndGameFromNaturalFlowAsync");
+            return Error.Failure($"Failed to end game from natural flow: {ex.Message}");
         }
         finally
         {

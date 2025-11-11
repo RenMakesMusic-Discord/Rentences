@@ -42,6 +42,9 @@ namespace Rentences.Application.Services
         public async Task<ErrorOr<GameMessageReactionResponse>> SendGameMessageReaction(GameMessageReactionCommand command)
             => await _mediator.Send(command);
 
+        public async Task<GameEndedNotificationResponse> SendGameEndedNotification(GameEndedNotification notification)
+            => await _mediator.Send(notification);
+
         public async Task<ErrorOr<bool>> AddReactionToMessage(ulong channelId, ulong messageId, Rentences.Domain.Definitions.Emote emoji)
         {
             return await _discordInterop.AddReactionToMessage(channelId, messageId, emoji);

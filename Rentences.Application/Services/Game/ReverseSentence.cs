@@ -147,8 +147,9 @@ namespace Rentences.Application.Services.Game
                     .WithColor(Color.Purple)
                     .Build();
 
-                // Notify via backend; do not start a new game here.
-                await _backend.SendGameStartedNotification(new(GameState, embed));
+                // Notify via standardized game ended contract; GameService orchestrates next game.
+                var endMessage = embed.Description ?? "Reverse Sentence game finished.";
+                await _backend.SendGameEndedNotification(new(GameState, endMessage));
             }
             catch (Exception ex)
             {

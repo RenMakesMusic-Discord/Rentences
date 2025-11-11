@@ -145,8 +145,9 @@ namespace Rentences.Application.Services.Game
                     .WithColor(Color.Green)
                     .Build();
 
-                // Notify via backend; do not start a new game here.
-                await _backend.SendGameStartedNotification(new(GameState, embed));
+                // Notify via standardized game ended contract; GameService orchestrates next game.
+                var endMessage = embed.Description ?? "Sentence game finished.";
+                await _backend.SendGameEndedNotification(new(GameState, endMessage));
             }
             catch (Exception ex)
             {

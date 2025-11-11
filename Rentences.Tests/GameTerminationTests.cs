@@ -12,6 +12,8 @@ using Rentences.Application.Services.Game;
 using Rentences.Domain;
 using Rentences.Domain.Definitions.Game;
 using Rentences.Application;
+using Rentences.Domain.Contracts.Game.GameEnded;
+using Rentences.Domain.Definitions;
 
 namespace Rentences.Tests
 {
@@ -195,6 +197,12 @@ namespace Rentences.Tests
             Assert.NotEqual(originalMode, _gameService.GetCurrentGameMode());
             Assert.NotNull(_gameService.GetCurrentGameMode());
         }
+
+        // NOTE:
+        // Integration of the full notification pipeline (GameEndedNotificationHandler)
+        // is validated indirectly via GameService.EndGameFromNaturalFlowAsync and
+        // dedicated handler tests in the Application layer. Here we keep scope minimal
+        // and focused on GameService orchestration guarantees.
 
         [Fact]
         public void IsGameRunning_ReflectsCurrentState()

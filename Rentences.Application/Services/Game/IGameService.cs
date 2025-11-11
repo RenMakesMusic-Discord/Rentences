@@ -22,4 +22,15 @@ public interface IGameService {
     public Task<ErrorOr<bool>> PerformRemoveActionAsync(ulong msgid);
     public bool IsGameRunning();
     public Gamemodes? GetCurrentGameMode();
+
+    /// <summary>
+    /// Centralized lifecycle hook for game modes or handlers to signal that
+    /// the current game has naturally completed via normal gameplay.
+    /// Implementations MUST:
+    /// - Validate the signal corresponds to the active game (where applicable),
+    /// - Finalize the game via the internal EndGame pipeline,
+    /// - Start the next natural game according to orchestration rules,
+    /// - Be idempotent / safe against duplicate calls.
+    /// </summary>
+    public Task<ErrorOr<bool>> EndGameFromNaturalFlowAsync(GameState finalState, string endMessage);
 }
