@@ -163,11 +163,27 @@ public class GameService : IGameService, IDisposable
     /// </summary>
     public ErrorOr<bool> EndGame()
     {
-        // Run synchronously by waiting for the async version
+        // Legacy synchronous wrapper.
+        // WARNING: This blocks synchronously on async code. Prefer using async flows from gateway/event contexts.
         try
         {
-            var task = EndGameInternalAsync();
-            return task.GetAwaiter().GetResult();
+            ErrorOr<bool> result;
+
+            gameLock.Wait();
+            try
+            {
+                var task = EndGameInternalAsync();
+                var internalResult = task.GetAwaiter().GetResult();
+                result = internalResult.Result;
+            }
+            finally
+            {
+                gameLock.Release();
+            }
+
+            // NOTE: We intentionally do NOT start the next game here to avoid re-entrancy from sync contexts.
+            // Callers that rely on natural chaining should use async APIs instead.
+            return result;
         }
         catch (Exception ex)
         {
@@ -337,27 +353,34 @@ public class GameService : IGameService, IDisposable
     }
 
     /// <summary>
-    /// Internal async version of EndGame for legacy wrapper and centralized flow.
-    /// This method:
-    /// - Assumes the handler will finalize its own state when asked,
-    /// - Clears the currentGame reference,
-    /// - Selects and starts the next natural game.
+    /// Internal async version of EndGame for legacy wrapper.
+    /// IMPORTANT:
+    /// - Caller is responsible for holding gameLock for the entire duration.
+    /// - This method MUST NOT start a new game or re-enter gameLock.
+    /// - It only ends the current game and computes what should be started next.
     /// </summary>
-    private async Task<ErrorOr<bool>> EndGameInternalAsync()
+    private async Task<(ErrorOr<bool> Result, Gamemodes? NextGamemode)> EndGameInternalAsync()
     {
-        // NOTE: Caller is responsible for taking the semaphore. This method must
-        // NOT acquire or release gameLock itself, to allow orchestration flows
-        // like EndGameFromNaturalFlowAsync to compose safely without deadlocks.
         if (currentGame == null)
         {
             logger.LogWarning("[Game Service] Attempted to end game but no current game exists");
-            return Error.Failure("No active game");
+            return (Error.Failure("No active game"), null);
         }
 
         try
         {
             // Capture last mode before ending/clearing
-            var lastMode = GetCurrentGameMode() ?? Gamemodes.GAMEMODE_CASUAL;
+            // NOTE: Do not call GetCurrentGameMode() here; it uses stateLock and iterates games.
+            // Instead, infer the mode directly from the handler map under the existing gameLock.
+            Gamemodes lastMode = Gamemodes.GAMEMODE_CASUAL;
+            foreach (var pair in games)
+            {
+                if (pair.Value == currentGame)
+                {
+                    lastMode = pair.Key;
+                    break;
+                }
+            }
 
             // Ask handler to finalize only; it must set GameState.CurrentState = ENDED
             // and MUST NOT start a new game.
@@ -374,16 +397,31 @@ public class GameService : IGameService, IDisposable
                 logger.LogInformation("[Game Service] Featured gamemode selected for next round: {FeaturedGamemode}", featured.Value);
             }
 
-            // Start next natural game (featured override if present, else normal behavior)
-            await StartNextNaturalGameAsync();
+            // Decide next natural game (featured override if present, else random)
+            Gamemodes? nextGamemode = null;
 
-            logger.LogInformation("[Game Service] Game ended and next natural game started");
-            return true;
+            if (_nextFeaturedGamemodeOverride.HasValue)
+            {
+                nextGamemode = _nextFeaturedGamemodeOverride.Value;
+            }
+            else
+            {
+                var gameModes = new[]
+                {
+                    Gamemodes.GAMEMODE_CASUAL,
+                    Gamemodes.GAMEMODE_LETTER_VOTE,
+                    Gamemodes.GAMEMODE_REVERSE_SENTENCE
+                };
+
+                nextGamemode = gameModes[random.Next(gameModes.Length)];
+            }
+
+            return (true, nextGamemode);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "[Game Service] Error ending game");
-            return Error.Failure($"Failed to end game: {ex.Message}");
+            return (Error.Failure($"Failed to end game: {ex.Message}"), null);
         }
     }
 
@@ -394,6 +432,11 @@ public class GameService : IGameService, IDisposable
     /// </summary>
     public async Task<ErrorOr<bool>> EndGameFromNaturalFlowAsync(GameState finalState, string endMessage)
     {
+        logger.LogTrace("[Game Service] Starting natural end-of-game transition");
+
+        Gamemodes? nextGamemode = null;
+        ErrorOr<bool> result;
+
         await gameLock.WaitAsync();
         try
         {
@@ -437,8 +480,10 @@ public class GameService : IGameService, IDisposable
 
             logger.LogInformation("[Game Service] Processing natural game end: {Message}", endMessage);
 
-            // Run the shared pipeline (does NOT manage lock itself).
-            return await EndGameInternalAsync();
+            // Run the shared pipeline under the lock to end and decide next, but do NOT start it yet.
+            var internalResult = await EndGameInternalAsync();
+            result = internalResult.Result;
+            nextGamemode = internalResult.NextGamemode;
         }
         catch (Exception ex)
         {
@@ -449,6 +494,30 @@ public class GameService : IGameService, IDisposable
         {
             gameLock.Release();
         }
+
+        // After releasing the lock, start the next game if one was selected.
+        if (result.IsError)
+        {
+            return result;
+        }
+
+        if (nextGamemode.HasValue)
+        {
+            logger.LogTrace("[Game Service] Starting next natural game after lock release: {Gamemode}", nextGamemode.Value);
+
+            if (_nextFeaturedGamemodeOverride.HasValue &&
+                _nextFeaturedGamemodeOverride.Value == nextGamemode.Value)
+            {
+                _nextFeaturedGamemodeOverride = null;
+                await StartGameWithForceTerminationAsync(nextGamemode.Value, "Featured gamemode one-round override (natural flow)");
+            }
+            else
+            {
+                await StartGameWithForceTerminationAsync(nextGamemode.Value, "Natural random game selection");
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -502,7 +571,7 @@ public class GameService : IGameService, IDisposable
             var modeToStart = _nextFeaturedGamemodeOverride.Value;
             _nextFeaturedGamemodeOverride = null; // consume
             logger.LogInformation("[Game Service] Starting next game using featured override: {Gamemode}", modeToStart);
-            await StartGameWithForceTerminationAsync(modeToStart, "Featured gamemode one-round override");
+            await StartGameWithForceTerminationAsync(modeToStart, "Featured gamemode one-round override (natural flow)");
             return;
         }
 
