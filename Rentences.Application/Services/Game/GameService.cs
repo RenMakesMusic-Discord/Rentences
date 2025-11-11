@@ -1,672 +1,369 @@
-﻿using Discord;
 using Discord.WebSocket;
 using ErrorOr;
 using Microsoft.Extensions.Logging;
-using System.ComponentModel.DataAnnotations;
-using System.Threading;
-using System.Threading.Tasks;
 using Rentences.Application.Services.Game;
 
 namespace Rentences.Application.Services;
 
-public class GameService : IGameService, IDisposable
-{
-    private readonly IDictionary<Gamemodes, IGamemodeHandler> games;
-    private IGamemodeHandler? currentGame;
-    
-    private readonly ILogger<GameService> logger;
-    private readonly SemaphoreSlim gameLock = new SemaphoreSlim(1, 1);
-    private readonly Timer? cleanupTimer;
-    private bool disposed = false;
+// Simplified single-channel GameService.
+//
+// Design:
+// - Single Discord server / single channel.
+// - Exactly one active game handler (or none) at any time.
+// - No SemaphoreSlim, no timers, no Task.Run orchestration.
+// - Game modes NEVER start the next game; they only:
+//     * manage their own internal state
+//     * emit GameEndedNotification via mediator/backend when they end.
+// - GameService is the sole orchestrator for:
+//     * starting a game
+//     * force-ending a game
+//     * reacting to GameEndedNotification (natural end)
+// - API remains async-friendly but logic is straightforward.
+// - We accept that MediatR/Discord.NET events for this single instance
+//   provide sufficient ordering; we do not attempt heavy concurrency control.
 
-    private GameState CurrentGameState;
-    private readonly Random random = new Random();
-    private readonly object stateLock = new object();
+public class GameService : IGameService
+{
+    private readonly IDictionary<Gamemodes, IGamemodeHandler> _games;
+    private readonly ILogger<GameService> _logger;
     private readonly IFeaturedGamemodeSelector _featuredGamemodeSelector;
 
-    // Tracks the last completed game round to prevent duplicate natural-end handling.
+    // The only mutable game state: one active handler or null.
+    private IGamemodeHandler? _currentGame;
+
+    // Tracks last completed game id to make natural-end handling idempotent.
     private Guid? _lastCompletedGameId;
 
-    // Next game to start naturally after a completed game; consumed once.
+    // Optional one-round featured override for natural flow.
     private Gamemodes? _nextFeaturedGamemodeOverride;
 
     public GameService(
-        IDictionary<Gamemodes, IGamemodeHandler> _games,
-        ILogger<GameService> _logger,
+        IDictionary<Gamemodes, IGamemodeHandler> games,
+        ILogger<GameService> logger,
         IFeaturedGamemodeSelector featuredGamemodeSelector)
     {
-        logger = _logger;
-        games = _games;
+        _games = games;
+        _logger = logger;
         _featuredGamemodeSelector = featuredGamemodeSelector;
-        
-        // Initialize cleanup timer for force termination scenarios
-        cleanupTimer = new Timer(async _ => await PerformPeriodicCleanup(), null,
-            TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
 
-        // Start initial game explicitly for our single server/channel.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await StartGameWithForceTerminationAsync(Gamemodes.GAMEMODE_CASUAL, "Initial startup");
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "[Game Service] Failed to start initial game");
-            }
-        });
+        // Start with a Casual game on startup.
+        _ = StartGameWithForceTerminationAsync(Gamemodes.GAMEMODE_CASUAL, "Initial startup");
     }
 
-    public void Dispose()
-    {
-        if (disposed) return;
-        
-        logger.LogInformation("[Game Service] Disposing game service...");
-        
-        // Force terminate any running game
-        _ = Task.Run(() => ForceTerminateCurrentGame("Service disposal"));
-        
-        // Clean up resources
-        gameLock?.Dispose();
-        cleanupTimer?.Dispose();
-        
-        disposed = true;
-        logger.LogInformation("[Game Service] Game service disposed successfully");
-    }
+    // MESSAGE HANDLING
 
-    /// <summary>
-    /// Thread-safe method to add a message to the current game
-    /// </summary>
+    // Called from MessageReceivedHandler.
     public async Task<ErrorOr<bool>> PerformAddActionAsync(SocketMessage msg)
     {
-        await gameLock.WaitAsync();
+        var game = _currentGame;
+
+        if (game is null)
+        {
+            return Error.Failure("No active game");
+        }
+
+        if (game.GameState.CurrentState != GameStatus.IN_PROGRESS)
+        {
+            return Error.Failure("Game is not in progress");
+        }
+
         try
         {
-            if (disposed)
-            {
-                logger.LogWarning("[Game Service] Attempted to add message but service is disposed");
-                return Error.Failure("Game service is not available");
-            }
-
-            if (currentGame == null)
-            {
-                // No active game; ignore.
-                return Error.Failure("No active game");
-            }
-
-            var state = currentGame.GameState;
-            if (state.CurrentState != GameStatus.IN_PROGRESS)
-            {
-                // Game exists but not in progress; ignore.
-                return Error.Failure("Game is not in progress");
-            }
-
-            return await currentGame.AddMessage(msg);
+            return await game.AddMessage(msg);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "[Game Service] Error adding message to game");
+            _logger.LogError(ex, "[Game Service] Error adding message");
             return Error.Failure($"Failed to add message: {ex.Message}");
         }
-        finally
-        {
-            gameLock.Release();
-        }
     }
 
-    /// <summary>
-    /// Thread-safe method to remove a message from the current game
-    /// </summary>
     public async Task<ErrorOr<bool>> PerformRemoveActionAsync(ulong msgid)
     {
-        await gameLock.WaitAsync();
+        var game = _currentGame;
+
+        if (game is null)
+        {
+            return Error.Failure("No active game");
+        }
+
         try
         {
-            if (currentGame == null || disposed)
-            {
-                logger.LogWarning("[Game Service] Attempted to remove message but no current game exists or service is disposed");
-                return Error.Failure("Game service is not available");
-            }
-
-            currentGame.DeleteMessage(msgid);
-            return true;
+            return await game.DeleteMessage(msgid);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "[Game Service] Error removing message from game");
+            _logger.LogError(ex, "[Game Service] Error removing message");
             return Error.Failure($"Failed to remove message: {ex.Message}");
-        }
-        finally
-        {
-            gameLock.Release();
         }
     }
 
-    /// <summary>
-    /// Legacy start game method for backward compatibility (not thread-safe)
-    /// </summary>
+    // Legacy sync wrappers.
+    public ErrorOr<bool> PerformAddAction(SocketMessage msg)
+        => PerformAddActionAsync(msg).GetAwaiter().GetResult();
+
+    public ErrorOr<bool> PerformRemoveAction(ulong msgid)
+        => PerformRemoveActionAsync(msgid).GetAwaiter().GetResult();
+
+    public ErrorOr<bool> PerformUserAction()
+        => Error.Failure("Not implemented");
+
+    // START GAME APIs
+
+    // Legacy IGameService.StartGame()
     public async Task StartGame()
     {
-        if (currentGame == null || currentGame.GameState.CurrentState != GameStatus.IN_PROGRESS)
+        if (_currentGame is null || _currentGame.GameState.CurrentState != GameStatus.IN_PROGRESS)
         {
             await StartGameWithForceTerminationAsync(Gamemodes.GAMEMODE_CASUAL, "Legacy start game call");
         }
     }
 
-    /// <summary>
-    /// Start a new game with force termination of any existing game
-    /// </summary>
-    public async Task StartGame([Required] Gamemodes Game)
-    {
-        await StartGameWithForceTerminationAsync(Game, "Manual game start request");
-    }
+    public async Task StartGame(Gamemodes gameMode)
+        => await StartGameWithForceTerminationAsync(gameMode, "Manual game start request");
 
-    /// <summary>
-    /// Start a random game with force termination (public API, used for manual/legacy calls).
-    /// Staff/admin or explicit calls should not be influenced by featured overrides.
-    /// </summary>
     public async Task StartRandomGame()
     {
-        var gameModes = new[]
+        var modes = new[]
         {
             Gamemodes.GAMEMODE_CASUAL,
             Gamemodes.GAMEMODE_LETTER_VOTE,
             Gamemodes.GAMEMODE_REVERSE_SENTENCE
         };
-        var selectedGame = gameModes[random.Next(gameModes.Length)];
 
-        logger.LogInformation("[Game Management] Random game selected: {SelectedGame} (explicit random request)", selectedGame);
-        await StartGameWithForceTerminationAsync(selectedGame, "Random game selection");
+        var selected = modes[new Random().Next(modes.Length)];
+        await StartGameWithForceTerminationAsync(selected, "Random game selection");
     }
 
-    /// <summary>
-    /// End the current game and start a new random game
-    /// </summary>
-    public ErrorOr<bool> EndGame()
+    // Canonical entrypoint: start game, forcibly ending any existing game first.
+    public async Task StartGameWithForceTerminationAsync(Gamemodes gameMode, string reason = "User requested new game")
     {
-        // Legacy synchronous wrapper.
-        // WARNING: This blocks synchronously on async code. Prefer using async flows from gateway/event contexts.
-        try
-        {
-            ErrorOr<bool> result;
+        _logger.LogInformation("[Game Service] Starting game with force termination. Mode={Mode}, Reason={Reason}", gameMode, reason);
 
-            gameLock.Wait();
-            try
-            {
-                var task = EndGameInternalAsync();
-                var internalResult = task.GetAwaiter().GetResult();
-                result = internalResult.Result;
-            }
-            finally
-            {
-                gameLock.Release();
-            }
-
-            // NOTE: We intentionally do NOT start the next game here to avoid re-entrancy from sync contexts.
-            // Callers that rely on natural chaining should use async APIs instead.
-            return result;
-        }
-        catch (Exception ex)
+        // End any existing game.
+        if (_currentGame is not null)
         {
-            logger.LogError(ex, "Error in legacy EndGame method");
-            return Error.Failure($"Failed to end game: {ex.Message}");
+            await ForceTerminateCurrentGameInternal("Start new game: " + reason);
         }
+
+        // Explicit start overrides any pending featured plan.
+        _nextFeaturedGamemodeOverride = null;
+        _lastCompletedGameId = null;
+
+        if (!_games.TryGetValue(gameMode, out var handler) || handler is null)
+        {
+            _logger.LogError("[Game Service] No handler registered for mode {Mode}", gameMode);
+            _currentGame = null;
+            return;
+        }
+
+        _currentGame = handler;
+
+        // Let the handler initialize and send GameStartedNotification.
+        await _currentGame.StartGame();
+
+        // Ensure a valid GameId.
+        if (_currentGame.GameState.GameId == Guid.Empty)
+        {
+            _currentGame.GameState = new GameState
+            {
+                GameId = Guid.NewGuid(),
+                CurrentState = GameStatus.IN_PROGRESS
+            };
+        }
+
+        _logger.LogInformation("[Game Service] Started game {Mode} with GameId={GameId}",
+            gameMode, _currentGame.GameState.GameId);
     }
 
-    /// <summary>
-    /// Start a game with force termination of any existing game.
-    /// This is the ONLY entry point for starting a new round.
-    /// Always:
-    /// - Ends any active game (once).
-    /// - Clears currentGame.
-    /// - Starts the requested mode.
-    /// </summary>
-    public async Task StartGameWithForceTerminationAsync([Required] Gamemodes gameMode, string reason = "User requested new game")
-    {
-        await gameLock.WaitAsync();
-        try
-        {
-            logger.LogInformation("[Game Service] Starting game with force termination. Mode: {Mode}, Reason: {Reason}", gameMode, reason);
+    // FORCE TERMINATION
 
-            // Always ensure previous round is fully torn down.
-            if (currentGame != null)
-            {
-                await ForceTerminateCurrentGameInternal(reason);
-            }
-
-            // Any explicit start (including staff) cancels pending featured override.
-            _nextFeaturedGamemodeOverride = null;
-
-            // Reset last-completed tracking when a brand new game is explicitly started.
-            // This keeps semantics simple: each StartGameWithForceTerminationAsync creates a new logical round.
-            _lastCompletedGameId = null;
-
-            if (!games.TryGetValue(gameMode, out var nextHandler) || nextHandler is null)
-            {
-                logger.LogError("[Game Service] Failed to get game handler for mode: {Mode}", gameMode);
-                currentGame = null;
-                return;
-            }
-
-            currentGame = nextHandler;
-
-            await currentGame.StartGame();
-
-            if (currentGame.GameState.GameId == Guid.Empty)
-            {
-                // Guarantee a valid GameId for single-server/single-channel orchestration.
-                currentGame.GameState = new GameState
-                {
-                    GameId = Guid.NewGuid(),
-                    CurrentState = GameStatus.IN_PROGRESS
-                };
-            }
-
-            logger.LogInformation("[Game Service] Successfully started new game: {Mode} (GameId={GameId})",
-                gameMode, currentGame.GameState.GameId);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Game Service] Error starting game {Mode} with force termination", gameMode);
-            currentGame = null;
-            throw;
-        }
-        finally
-        {
-            gameLock.Release();
-        }
-    }
-
-    /// <summary>
-    /// Force terminate the current game, bypassing normal game logic
-    /// </summary>
     public async Task ForceTerminateCurrentGame(string reason = "Force termination")
     {
-        await gameLock.WaitAsync();
-        try
-        {
-            await ForceTerminateCurrentGameInternal(reason);
-        }
-        finally
-        {
-            gameLock.Release();
-        }
+        await ForceTerminateCurrentGameInternal(reason);
     }
 
-    /// <summary>
-    /// Internal force termination implementation
-    /// </summary>
+    // Internal force terminate: no recursion, no starting next game automatically.
     private async Task ForceTerminateCurrentGameInternal(string reason)
     {
-        if (currentGame == null)
+        var game = _currentGame;
+        if (game is null)
         {
-            logger.LogInformation("[Game Service] No current game to terminate");
+            _logger.LogInformation("[Game Service] No current game to terminate");
             return;
         }
 
         try
         {
-            logger.LogInformation("[Game Service] Force terminating current game. Reason: {Reason}", reason);
+            _logger.LogInformation("[Game Service] Force terminating current game. Reason={Reason}", reason);
 
             try
             {
-                // Let the handler mark ENDED and emit at most one GameEndedNotification.
-                await currentGame.EndGame();
-                logger.LogInformation("[Game Service] Graceful termination completed");
+                // Let handler mark itself ENDED and emit GameEndedNotification once.
+                await game.EndGame();
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "[Game Service] Graceful termination failed, proceeding with hard clear");
+                _logger.LogWarning(ex, "[Game Service] Game EndGame() threw during force termination; continuing");
             }
 
-            // Mark this game as completed for natural-flow idempotency.
-            var completedId = currentGame.GameState.GameId;
-            if (completedId != Guid.Empty)
+            if (game.GameState.GameId != Guid.Empty)
             {
-                _lastCompletedGameId = completedId;
+                _lastCompletedGameId = game.GameState.GameId;
             }
 
-            // Clear reference: for our single server/channel there is now no active game.
-            currentGame = null;
+            _currentGame = null;
 
-            logger.LogInformation("[Game Service] Force termination completed; no active game remains.");
+            _logger.LogInformation("[Game Service] Force termination complete; no active game.");
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "[Game Service] Error during force termination: {Reason}", reason);
-
-            // Force clear reference even if termination failed
-            currentGame = null;
-            logger.LogWarning("[Game Service] Cleared current game reference despite termination error");
+            _logger.LogError(ex, "[Game Service] Unexpected error during force termination; clearing current game.");
+            _currentGame = null;
         }
     }
 
-    /// <summary>
-    /// Periodic cleanup to handle stuck or orphaned games
-    /// </summary>
-    private async Task PerformPeriodicCleanup()
-    {
-        if (disposed) return;
-        
-        await gameLock.WaitAsync();
-        try
-        {
-            if (currentGame != null &&
-                currentGame.GameState.CurrentState == GameStatus.ENDED)
-            {
-                logger.LogWarning("[Game Service] Detected orphaned game state, performing cleanup");
-                currentGame = null;
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Game Service] Error during periodic cleanup");
-        }
-        finally
-        {
-            gameLock.Release();
-        }
-    }
+    // NATURAL END FROM GameEndedNotificationHandler
 
-    /// <summary>
-    /// Check if a game is currently running
-    /// </summary>
-    public bool IsGameRunning()
-    {
-        lock (stateLock)
-        {
-            return currentGame != null &&
-                   currentGame.GameState.CurrentState == GameStatus.IN_PROGRESS;
-        }
-    }
-
-    /// <summary>
-    /// Get the current game mode (if any)
-    /// </summary>
-    public Gamemodes? GetCurrentGameMode()
-    {
-        lock (stateLock)
-        {
-            if (currentGame == null) return null;
-            
-            // Determine game mode by matching handler
-            foreach (var game in games)
-            {
-                if (game.Value == currentGame)
-                {
-                    return game.Key;
-                }
-            }
-            
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Internal async version of EndGame for legacy wrapper.
-    /// IMPORTANT:
-    /// - Caller is responsible for holding gameLock for the entire duration.
-    /// - This method MUST NOT start a new game or re-enter gameLock.
-    /// - It only ends the current game and computes what should be started next.
-    /// </summary>
-    private async Task<(ErrorOr<bool> Result, Gamemodes? NextGamemode)> EndGameInternalAsync()
-    {
-        if (currentGame == null)
-        {
-            logger.LogWarning("[Game Service] Attempted to end game but no current game exists");
-            return (Error.Failure("No active game"), null);
-        }
-
-        try
-        {
-            // Capture last mode before ending/clearing
-            // NOTE: Do not call GetCurrentGameMode() here; it uses stateLock and iterates games.
-            // Instead, infer the mode directly from the handler map under the existing gameLock.
-            Gamemodes lastMode = Gamemodes.GAMEMODE_CASUAL;
-            foreach (var pair in games)
-            {
-                if (pair.Value == currentGame)
-                {
-                    lastMode = pair.Key;
-                    break;
-                }
-            }
-
-            // Ask handler to finalize only; it must set GameState.CurrentState = ENDED
-            // and MUST NOT start a new game.
-            await currentGame.EndGame();
-
-            // Capture completed GameId for idempotency tracking.
-            var completedGameId = currentGame.GameState.GameId;
-            if (completedGameId != Guid.Empty)
-            {
-                _lastCompletedGameId = completedGameId;
-            }
-
-            // Clear current game; GameState is authoritative and now ENDED.
-            currentGame = null;
-
-            // One-round featured selection via selector (natural lifecycle only)
-            var featured = _featuredGamemodeSelector.TrySelectFeaturedGamemode(lastMode);
-            if (featured.HasValue)
-            {
-                _nextFeaturedGamemodeOverride = featured.Value;
-                logger.LogInformation("[Game Service] Featured gamemode selected for next round: {FeaturedGamemode}", featured.Value);
-            }
-
-            // Decide next natural game (featured override if present, else random)
-            Gamemodes? nextGamemode = null;
-
-            if (_nextFeaturedGamemodeOverride.HasValue)
-            {
-                nextGamemode = _nextFeaturedGamemodeOverride.Value;
-            }
-            else
-            {
-                var gameModes = new[]
-                {
-                    Gamemodes.GAMEMODE_CASUAL,
-                    Gamemodes.GAMEMODE_LETTER_VOTE,
-                    Gamemodes.GAMEMODE_REVERSE_SENTENCE
-                };
-
-                nextGamemode = gameModes[random.Next(gameModes.Length)];
-            }
-
-            return (true, nextGamemode);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Game Service] Error ending game");
-            return (Error.Failure($"Failed to end game: {ex.Message}"), null);
-        }
-    }
-
-    /// <summary>
-    /// Centralized lifecycle hook for natural game completion.
-    /// Called by notification handlers once a game has logically ended and
-    /// been announced (e.g., via GameEndedNotification).
-    /// </summary>
+    // Called when a game mode has ended itself and emitted GameEndedNotification.
     public async Task<ErrorOr<bool>> EndGameFromNaturalFlowAsync(GameState finalState, string endMessage)
     {
-        logger.LogTrace("[Game Service] Starting natural end-of-game transition");
-
-        Gamemodes? nextGamemode = null;
-        ErrorOr<bool> result;
-
-        await gameLock.WaitAsync();
-        try
+        if (finalState.GameId == Guid.Empty)
         {
-            // Reject obviously invalid signals early
-            if (finalState.GameId == Guid.Empty)
-            {
-                logger.LogWarning("[Game Service] Natural end signal missing GameId; ignoring.");
-                return Error.Failure("Invalid game id");
-            }
-
-            // Idempotency: if we have already completed this GameId, ignore duplicates.
-            if (_lastCompletedGameId.HasValue && _lastCompletedGameId.Value == finalState.GameId)
-            {
-                logger.LogInformation(
-                    "[Game Service] Natural end called for already completed game {GameId}; no action taken.",
-                    finalState.GameId);
-                return true;
-            }
-
-            if (currentGame == null)
-            {
-                logger.LogWarning(
-                    "[Game Service] Natural end called for GameId={GameId} but no current game exists; treating as already finalized.",
-                    finalState.GameId);
-                _lastCompletedGameId = finalState.GameId;
-                return true;
-            }
-
-            var activeState = currentGame.GameState;
-
-            // Ensure the signal corresponds to the active game round where possible.
-            if (activeState.GameId != Guid.Empty &&
-                finalState.GameId != Guid.Empty &&
-                activeState.GameId != finalState.GameId)
-            {
-                logger.LogWarning(
-                    "[Game Service] Natural end signal ignored: GameId mismatch. Active={ActiveId}, Final={FinalId}",
-                    activeState.GameId, finalState.GameId);
-                return Error.Failure("Mismatched game id");
-            }
-
-            // If the handler already reports ENDED and we don't have a currentGame anymore,
-            // treat it as already finalized.
-            if (activeState.CurrentState == GameStatus.ENDED && currentGame == null)
-            {
-                logger.LogInformation("[Game Service] Natural end called but already finalized; no action taken.");
-                _lastCompletedGameId = finalState.GameId;
-                return true;
-            }
-
-            // Ensure the handler is marked ENDED before running the internal pipeline.
-            if (currentGame.GameState.CurrentState != GameStatus.ENDED)
-            {
-                currentGame.GameState = new GameState
-                {
-                    GameId = activeState.GameId == Guid.Empty
-                        ? finalState.GameId
-                        : activeState.GameId,
-                    CurrentState = GameStatus.ENDED
-                };
-            }
-
-            logger.LogInformation("[Game Service] Processing natural game end for GameId={GameId}: {Message}", finalState.GameId, endMessage);
-
-            // Run the shared pipeline under the lock to end and decide next, but do NOT start it yet.
-            var internalResult = await EndGameInternalAsync();
-            result = internalResult.Result;
-            nextGamemode = internalResult.NextGamemode;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "[Game Service] Error in EndGameFromNaturalFlowAsync");
-            return Error.Failure($"Failed to end game from natural flow: {ex.Message}");
-        }
-        finally
-        {
-            gameLock.Release();
+            _logger.LogWarning("[Game Service] Natural end received with empty GameId; ignoring.");
+            return Error.Failure("Invalid game id");
         }
 
-        // After releasing the lock, start the next game if one was selected.
-        if (result.IsError)
+        // Idempotency: ignore if we've already handled this GameId.
+        if (_lastCompletedGameId.HasValue && _lastCompletedGameId.Value == finalState.GameId)
         {
-            return result;
+            _logger.LogInformation("[Game Service] Natural end for GameId={GameId} already handled; ignoring.", finalState.GameId);
+            return true;
         }
 
-        if (nextGamemode.HasValue)
-        {
-            logger.LogTrace("[Game Service] Starting next natural game after lock release: {Gamemode}", nextGamemode.Value);
+        var active = _currentGame;
 
-            // Always start via the single entry point; this will:
-            // - respect that previous game is fully ended
-            // - start the next game for our single server/channel
-            if (_nextFeaturedGamemodeOverride.HasValue &&
-                _nextFeaturedGamemodeOverride.Value == nextGamemode.Value)
-            {
-                _nextFeaturedGamemodeOverride = null;
-                await StartGameWithForceTerminationAsync(nextGamemode.Value, "Featured gamemode one-round override (natural flow)");
-            }
-            else
-            {
-                await StartGameWithForceTerminationAsync(nextGamemode.Value, "Natural random game selection");
-            }
+        // If no active game, treat as stale/already processed.
+        if (active is null)
+        {
+            _logger.LogInformation("[Game Service] Natural end for GameId={GameId} but no active game; marking as completed.", finalState.GameId);
+            _lastCompletedGameId = finalState.GameId;
+            return true;
         }
 
-        return result;
-    }
+        var activeState = active.GameState;
 
-    /// <summary>
-    /// Legacy PerformAddAction method for backward compatibility
-    /// </summary>
-    public ErrorOr<bool> PerformAddAction(SocketMessage msg)
-    {
-        try
+        // If active gameId is set and does not match, this notification is stale/unrelated.
+        if (activeState.GameId != Guid.Empty &&
+            activeState.GameId != finalState.GameId)
         {
-            var task = PerformAddActionAsync(msg);
-            return task.GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error in legacy PerformAddAction method");
-            return Error.Failure($"Failed to add action: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Legacy PerformRemoveAction method for backward compatibility
-    /// </summary>
-    public ErrorOr<bool> PerformRemoveAction(ulong msgid)
-    {
-        try
-        {
-            var task = PerformRemoveActionAsync(msgid);
-            return task.GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error in legacy PerformRemoveAction method");
-            return Error.Failure($"Failed to remove action: {ex.Message}");
-        }
-    }
-
-    public ErrorOr<bool> PerformUserAction()
-    {
-        throw new NotImplementedException();
-    }
-
-    /// <summary>
-    /// Start the next "natural" game after a completed round.
-    /// Respects a one-round featured override if set; otherwise uses prior random behavior.
-    /// </summary>
-    private async Task StartNextNaturalGameAsync()
-    {
-        // Use featured override exactly once if present
-        if (_nextFeaturedGamemodeOverride.HasValue)
-        {
-            var modeToStart = _nextFeaturedGamemodeOverride.Value;
-            _nextFeaturedGamemodeOverride = null; // consume
-            logger.LogInformation("[Game Service] Starting next game using featured override: {Gamemode}", modeToStart);
-            await StartGameWithForceTerminationAsync(modeToStart, "Featured gamemode one-round override (natural flow)");
-            return;
+            _logger.LogWarning(
+                "[Game Service] Natural end GameId mismatch. Active={ActiveId}, Final={FinalId}. Ignoring.",
+                activeState.GameId, finalState.GameId);
+            return Error.Failure("Mismatched game id");
         }
 
-        // Fallback: replicate previous StartRandomGame behavior
-        var gameModes = new[]
+        // Consider this the authoritative end.
+        _logger.LogInformation("[Game Service] Finalizing natural end for GameId={GameId}: {Message}",
+            finalState.GameId, endMessage);
+
+        active.GameState = new GameState
         {
-            Gamemodes.GAMEMODE_CASUAL,
-            Gamemodes.GAMEMODE_LETTER_VOTE,
-            Gamemodes.GAMEMODE_REVERSE_SENTENCE
+            GameId = finalState.GameId,
+            CurrentState = GameStatus.ENDED
         };
 
-        var selectedGame = gameModes[random.Next(gameModes.Length)];
-        logger.LogInformation("[Game Management] Random game selected (natural flow): {SelectedGame}", selectedGame);
+        _lastCompletedGameId = finalState.GameId;
+        _currentGame = null;
 
-        await StartGameWithForceTerminationAsync(selectedGame, "Natural random game selection");
+        // Decide next mode and start it.
+        var next = SelectNextGamemode(active);
+        if (next.HasValue)
+        {
+            await StartGameWithForceTerminationAsync(next.Value, "Natural flow auto-next");
+        }
+
+        return true;
+    }
+
+    // SIMPLE NEXT-GAME SELECTION
+
+    private Gamemodes? SelectNextGamemode(IGamemodeHandler previous)
+    {
+        var previousMode = Gamemodes.GAMEMODE_CASUAL;
+
+        foreach (var kvp in _games)
+        {
+            if (ReferenceEquals(kvp.Value, previous))
+            {
+                previousMode = kvp.Key;
+                break;
+            }
+        }
+
+        // Check for a featured override.
+        var featured = _featuredGamemodeSelector.TrySelectFeaturedGamemode(previousMode);
+        if (featured.HasValue)
+        {
+            _nextFeaturedGamemodeOverride = featured.Value;
+        }
+
+        if (_nextFeaturedGamemodeOverride.HasValue)
+        {
+            var mode = _nextFeaturedGamemodeOverride.Value;
+            _nextFeaturedGamemodeOverride = null;
+            return mode;
+        }
+
+        // Fallback: random from registered modes.
+        var modes = _games.Keys.ToArray();
+        if (modes.Length == 0)
+        {
+            _logger.LogError("[Game Service] No registered game modes; cannot select next game.");
+            return null;
+        }
+
+        return modes[new Random().Next(modes.Length)];
+    }
+
+    // HELPERS / DIAGNOSTICS
+
+    public bool IsGameRunning()
+        => _currentGame is not null && _currentGame.GameState.CurrentState == GameStatus.IN_PROGRESS;
+
+    public Gamemodes? GetCurrentGameMode()
+    {
+        var game = _currentGame;
+        if (game is null) return null;
+
+        foreach (var kvp in _games)
+        {
+            if (ReferenceEquals(kvp.Value, game))
+            {
+                return kvp.Key;
+            }
+        }
+
+        return null;
+    }
+
+    // Legacy synchronous EndGame; uses natural flow.
+    public ErrorOr<bool> EndGame()
+    {
+        var game = _currentGame;
+        if (game is null)
+        {
+            return Error.Failure("No active game");
+        }
+
+        var state = game.GameState;
+        if (state.GameId == Guid.Empty)
+        {
+            state.GameId = Guid.NewGuid();
+        }
+
+        return EndGameFromNaturalFlowAsync(state, "Legacy EndGame() call")
+            .GetAwaiter()
+            .GetResult();
     }
 }
