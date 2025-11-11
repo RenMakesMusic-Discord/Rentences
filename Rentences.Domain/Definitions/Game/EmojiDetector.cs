@@ -15,6 +15,22 @@ public static class EmojiDetector
 
     public static void InitializeAllowedEmojis(SocketGuild guild)
     {
+        // Defensive: if guild or its emotes are not available, keep existing configuration
+        // and avoid throwing on startup.
+        if (guild == null)
+        {
+            // No guild available yet; leave AllowedEmojiIds as-is.
+            return;
+        }
+
+        if (guild.Emotes == null || !guild.Emotes.Any())
+        {
+            // Guild has no emotes (or not loaded yet); reset to empty to avoid stale data,
+            // but do not fail startup.
+            AllowedEmojiIds = new HashSet<ulong>();
+            return;
+        }
+
         // Populate AllowedEmojiIds with the IDs of the guild emojis
         AllowedEmojiIds = new HashSet<ulong>(guild.Emotes.Select(e => e.Id));
     }

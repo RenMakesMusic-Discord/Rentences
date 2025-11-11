@@ -56,7 +56,13 @@ public class DiscordListener : IHostedService
             isReady = true;
         }
         await interop.WakeGame(new());
-        EmojiDetector.InitializeAllowedEmojis(client.GetGuild(ulong.Parse(configuration.ServerId)));
+
+        // Initialize emoji detection only when a valid guild is available.
+        var guildIdParsed = ulong.TryParse(configuration.ServerId, out var guildId);
+        var guild = guildIdParsed ? client.GetGuild(guildId) : null;
+
+        // This call is now defensive against null/missing guild/emotes and will not throw.
+        EmojiDetector.InitializeAllowedEmojis(guild);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
