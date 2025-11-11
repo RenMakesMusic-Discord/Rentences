@@ -80,8 +80,7 @@ public class GameService : IGameService, IDisposable
                 return Error.Failure("Game is not in progress");
             }
 
-            currentGame.AddMessage(msg);
-            return true;
+            return await currentGame.AddMessage(msg);
         }
         catch (Exception ex)
         {
@@ -250,10 +249,10 @@ public class GameService : IGameService, IDisposable
         {
             logger.LogInformation($"[Game Service] Force terminating current game. Reason: {reason}");
             
-            // Attempt graceful termination first
+            // Attempt graceful termination first: handler should set GameState to ENDED and not start another game.
             try
             {
-                currentGame.EndGame();
+                await currentGame.EndGame();
                 logger.LogInformation("[Game Service] Graceful termination completed");
             }
             catch (Exception ex)
@@ -354,9 +353,10 @@ public class GameService : IGameService, IDisposable
             // Capture last mode before ending/clearing
             var lastMode = GetCurrentGameMode() ?? Gamemodes.GAMEMODE_CASUAL;
 
-            currentGame.EndGame();
+            // Ask handler to finalize only; it must set GameState.CurrentState = ENDED and must NOT start a new game.
+            await currentGame.EndGame();
 
-            // Clear current game
+            // Clear current game; GameState is authoritative and now ENDED.
             currentGame = null;
 
             // One-round featured selection via selector (natural lifecycle only)

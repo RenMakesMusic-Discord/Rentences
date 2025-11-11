@@ -55,13 +55,13 @@ namespace Rentences.Tests
             // Arrange
             _gameService = CreateService();
             await _gameService.StartGame(Gamemodes.GAMEMODE_CASUAL); // Start initial game
-            
+
             Assert.Equal(GameStatus.IN_PROGRESS, _mockCasualGame.GameState.CurrentState);
 
             // Act
             await _gameService.StartGameWithForceTerminationAsync(Gamemodes.GAMEMODE_REVERSE_SENTENCE, "Test termination");
 
-            // Assert
+            // Assert: previous game ended, new game in progress
             Assert.Equal(GameStatus.ENDED, _mockCasualGame.GameState.CurrentState);
             Assert.Equal(GameStatus.IN_PROGRESS, _mockReverseGame.GameState.CurrentState);
         }

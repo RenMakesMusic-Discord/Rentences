@@ -78,8 +78,10 @@ public class WordRepository : IWordRepository
 
     public IQueryable<Word> GetTopWordsByUser(ulong userId, int topCount = 10)
     {
+        // EF-translatable filtering by user, then switch to LINQ-to-Objects
         return _dbContext.Words
-            .Where(w => w.Author == userId) // Filter by the specific user
+            .Where(w => w.Author == userId)
+            .AsEnumerable()
             // Normalize for aggregation: lowercase + strip leading/trailing punctuation/separators, preserve internal apostrophes
             .Select(w => new
             {
@@ -87,14 +89,15 @@ public class WordRepository : IWordRepository
                 Normalized = NormalizeForAggregation(w.Value)
             })
             .Where(x => !string.IsNullOrEmpty(x.Normalized))
-            .GroupBy(x => x.Normalized)          // Group by normalized word value
-            .OrderByDescending(g => g.Count()) // Order by usage count in descending order
-            .ThenBy(g => g.Key)               // Stable ordering for ties
-            .Take(topCount)                   // Take the top N results
+            .GroupBy(x => x.Normalized)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key)
+            .Take(topCount)
             .Select(g => new Word
             {
-                Value = g.Key,                // Expose normalized value as the word
-            });
+                Value = g.Key,
+            })
+            .AsQueryable();
     }
 
     private static string NormalizeForAggregation(string value)

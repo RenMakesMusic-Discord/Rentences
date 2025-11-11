@@ -6,6 +6,7 @@ using Rentences.Domain.Definitions;
 using Rentences.Domain.Definitions.Game;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
@@ -18,7 +19,6 @@ namespace Rentences.Application.Services.Game
         private readonly DiscordConfiguration _config;
         private readonly WordService _wordService;
         private ulong LastSenderId;
-        private GameStatus gameStatus;
 
         public ReverseSentence(ILogger<ReverseSentence> logger, IInterop Backend, DiscordConfiguration configuration, WordService wordService)
         {
@@ -26,7 +26,7 @@ namespace Rentences.Application.Services.Game
             _backend = Backend;
             _config = configuration;
             _wordService = wordService;
-            WordList = new List<Word>(); // Initialize WordList
+            WordList = new List<Word>();
         }
 
         public GameState GameState { get; set; }
@@ -36,8 +36,14 @@ namespace Rentences.Application.Services.Game
         {
             var previousWord = WordList.OrderByDescending(w => w.TimeStamp).LastOrDefault();
 
+            if (GameState.CurrentState != GameStatus.IN_PROGRESS)
+            {
+                await FailMessage(message);
+                return Error.Validation(CustomErrorValues.WordValidationTitle.Title, "Game is not currently in progress.");
+            }
+
             Word w = new Word().CreateWord(message.Id, message.Content, message.Author.Id, message.Timestamp);
-            if (w == null || WordList.Count < 3 && Word.ContainsValidTermination(w) || LastSenderId == message.Author.Id || gameStatus != GameStatus.IN_PROGRESS || Word.ContainsValidTermination(previousWord))
+            if (w == null || WordList.Count < 3 && Word.ContainsValidTermination(w) || LastSenderId == message.Author.Id || Word.ContainsValidTermination(previousWord))
             {
                 await FailMessage(message);
                 return Error.Validation(CustomErrorValues.WordValidationTitle.Title, CustomErrorValues.WordValidationTitle.Description);
@@ -47,9 +53,7 @@ namespace Rentences.Application.Services.Game
             await AddWord(w);
             if (Word.ContainsValidTermination(w))
             {
-                gameStatus = GameStatus.ENDED;
                 await _backend.SendGameMessageReaction(new() { socketMessage = message, emoji = _config.WinEmoji });
-
                 await EndGame();
             }
 
@@ -85,55 +89,66 @@ namespace Rentences.Application.Services.Game
         {
             try
             {
-                gameStatus = GameStatus.ENDED;
-                string generatedMessage = "";
-                string preMessage = "The players have constructed the following sentence:";
-                string userTags = "";
-                List<ulong> authors = new List<ulong>();
-                LastSenderId = ulong.MinValue;
-                
-                // Initialize an empty string for the generated message and user tags
-                generatedMessage = string.Empty;
-                userTags = ">>> ";
-
-                // Collect all words and join into a single sentence
-                foreach (Word word in WordList.OrderBy(w => w.TimeStamp)) {
-                    // Append the word's value to the generated message
-                    generatedMessage += (" " + word.Value);
-
-                    // Skip if the author is already processed
-                    if (authors.Contains(word.Author))
-                        continue;
-
-                    // Add the author to the processed list
-                    authors.Add(word.Author);
-
-                    // Fetch the author's top word and total number of contributions
-                    List<Word>? topWord = _wordService.GetTopWordsByUser(word.Author, 1)?.ToList();
-                    var totalContributions = await _wordService.GetTotalWordsAddedByUserAsync(word.Author);
-
-                    // Format the user's contribution details in indented and smaller text
-                    string topWordInfo = topWord != null && topWord.Any()
-                        ? $"**<@{word.Author}>** [ *Top word: {topWord.First().Value}* | *Total contributions: {totalContributions}* ]"
-                        : $"**<@{word.Author}>** [ *Total contributions: {totalContributions}* ]";
-
-                    // Add the formatted author tag to the userTags string
-                    userTags += topWordInfo + "\n";
+                // Mark terminal state for GameService
+                if (GameState.CurrentState != GameStatus.ENDED)
+                {
+                    GameState = new GameState
+                    {
+                        GameId = GameState.GameId == Guid.Empty ? Guid.NewGuid() : GameState.GameId,
+                        CurrentState = GameStatus.ENDED
+                    };
                 }
 
-                // Reverse the sentence
-                string reversedMessage = ReverseSentenceLogic(generatedMessage);
+                LastSenderId = ulong.MinValue;
 
-                // Append user tags to the generated message as a summary
-                reversedMessage += "\n";
+                var authors = new List<ulong>();
+                var userTags = ">>> ";
+                var sentenceBuilder = new StringBuilder();
+
+                foreach (var word in WordList.OrderBy(w => w.TimeStamp))
+                {
+                    if (!string.IsNullOrWhiteSpace(word.Value))
+                    {
+                        sentenceBuilder.Append(' ').Append(word.Value);
+                    }
+
+                    if (!authors.Contains(word.Author))
+                    {
+                        authors.Add(word.Author);
+
+                        var topWord = _wordService.GetTopWordsByUser(word.Author, 1)?.ToList();
+                        var totalContributions = await _wordService.GetTotalWordsAddedByUserAsync(word.Author);
+
+                        string topWordInfo = topWord != null && topWord.Any()
+                            ? $"**<@{word.Author}>** [ *Top word: {topWord.First().Value}* | *Total contributions: {totalContributions}* ]"
+                            : $"**<@{word.Author}>** [ *Total contributions: {totalContributions}* ]";
+
+                        userTags += topWordInfo + "\n";
+                    }
+                }
+
+                var rawSentence = sentenceBuilder.ToString();
+                var hasWords = !string.IsNullOrWhiteSpace(rawSentence);
+
+                string description;
+                if (hasWords)
+                {
+                    var cleaned = CleanMessage(ReverseSentenceLogic(rawSentence));
+                    description = $"**The players have constructed the following sentence:**\n# {cleaned}\n{userTags}";
+                }
+                else
+                {
+                    description = "No valid sentence was constructed this round.";
+                }
 
                 var embed = new EmbedBuilder()
                     .WithTitle("🔄 Reversed Sentence Complete! 🔄")
-                    .WithDescription($"**{preMessage}**\n# {CleanMessage(reversedMessage)}\n")
+                    .WithDescription(description)
                     .WithColor(Color.Purple)
                     .Build();
 
-                await StartGame(embed, userTags);
+                // Notify via backend; do not start a new game here.
+                await _backend.SendGameStartedNotification(new(GameState, embed));
             }
             catch (Exception ex)
             {
@@ -278,32 +293,51 @@ namespace Rentences.Application.Services.Game
 
         public async Task StartGame(Embed previousMessage, string userTags)
         {
+            WordList = new List<Word>();
+            GameState = new GameState
+            {
+                GameId = Guid.NewGuid(),
+                CurrentState = GameStatus.IN_PROGRESS
+            };
+
             await _backend.SendGameStartedNotification(new(GameState, previousMessage));
-            await _backend.SendMessage(new SendDiscordMessage($"✨ Contributed by ✨\n {userTags}"));
-            await StartGame();
+            if (!string.IsNullOrWhiteSpace(userTags))
+            {
+                await _backend.SendMessage(new SendDiscordMessage($"✨ Contributed by ✨\n {userTags}"));
+            }
         }
 
         public async Task StartGame(string previousMessage)
         {
+            WordList = new List<Word>();
+            GameState = new GameState
+            {
+                GameId = Guid.NewGuid(),
+                CurrentState = GameStatus.IN_PROGRESS
+            };
+
             var embed = new EmbedBuilder()
                 .WithDescription($"{previousMessage}\n\n🔄 A new game of **Rentences Reverse Sentence** is about to begin! Get ready! 🎮")
                 .WithColor(Color.Purple)
                 .Build();
 
-            WordList = new List<Word>();
-            gameStatus = GameStatus.IN_PROGRESS;
             await _backend.SendGameStartedNotification(new(GameState, embed));
         }
 
         public async Task StartGame()
         {
+            WordList = new List<Word>();
+            GameState = new GameState
+            {
+                GameId = Guid.NewGuid(),
+                CurrentState = GameStatus.IN_PROGRESS
+            };
+
             var embed = new EmbedBuilder()
                 .WithDescription("🔄 A new game of **Rentences Reverse Sentence** is about to begin! Get ready! 🎮")
                 .WithColor(Color.Purple)
                 .Build();
 
-            WordList = new List<Word>();
-            gameStatus = GameStatus.IN_PROGRESS;
             await _backend.SendGameStartedNotification(new(GameState, embed));
         }
     }

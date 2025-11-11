@@ -204,13 +204,26 @@ namespace Rentences.Application.Services.Game
 
                 generatedMessage += "\n";
 
+                var hasWords = !string.IsNullOrWhiteSpace(generatedMessage);
+
+                string description;
+                if (hasWords)
+                {
+                    var cleaned = CleanMessage(generatedMessage);
+                    description = $"**{preMessage}**\n# {cleaned}\n{userTags}";
+                }
+                else
+                {
+                    description = "No valid sentence was constructed this round.";
+                }
+
                 var embed = new EmbedBuilder()
                     .WithTitle("📝 Sentence Complete! 📝")
-                    .WithDescription($"**{preMessage}**\n# {CleanMessage(generatedMessage)}\n{userTags}")
+                    .WithDescription(description)
                     .WithColor(Color.Green)
                     .Build();
 
-                // Emit standardized game ended notification with the final embed
+                // Emit standardized game ended notification with the final embed.
                 var endMessage = embed.Description ?? "Letters game finished.";
                 await _mediator.Send(new GameEndedNotification(GameState, endMessage));
             }
