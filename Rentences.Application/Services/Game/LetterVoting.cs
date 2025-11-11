@@ -62,7 +62,18 @@ namespace Rentences.Application.Services.Game
             _mediator = mediator;
             WordList = new List<Word>();
             votingCancellationTokenSource = new CancellationTokenSource();
-            gameChannelId = ulong.Parse(configuration.ChannelId);
+
+            // Always resolve the gameChannelId from the strongly-typed DiscordConfiguration.
+            // This uses the same single source of truth as all other Discord message flows.
+            if (string.IsNullOrWhiteSpace(configuration.ChannelId))
+            {
+                throw new InvalidOperationException("Discord ChannelId is not configured. Ensure 'DiscordConfiguration:ChannelId' is set in appsettings.json.");
+            }
+
+            if (!ulong.TryParse(configuration.ChannelId, out gameChannelId))
+            {
+                throw new InvalidOperationException($"Discord ChannelId '{configuration.ChannelId}' is invalid. Ensure 'DiscordConfiguration:ChannelId' is a valid ulong.");
+            }
 
             // Initialize shared game state
             GameState = new GameState

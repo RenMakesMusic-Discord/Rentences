@@ -19,8 +19,20 @@ public class SendMessageHandler : IRequestHandler<SendDiscordMessage, ErrorOr<bo
     }
 
     public async Task<ErrorOr<bool>> Handle(SendDiscordMessage request, CancellationToken cancellationToken) {
-        // Use the discordConfig to send the start message
-        await _discord.SendMessageAsync(ulong.Parse(_discordConfig.ChannelId), request.Message);
+        // Always resolve ChannelId from configuration as single source of truth.
+        var configuredChannelId = _discordConfig.ChannelId;
+
+        if (string.IsNullOrWhiteSpace(configuredChannelId))
+        {
+            throw new InvalidOperationException("Discord ChannelId is not configured. Ensure 'DiscordConfiguration:ChannelId' is set in appsettings.json.");
+        }
+
+        if (!ulong.TryParse(configuredChannelId, out var channelId))
+        {
+            throw new InvalidOperationException($"Discord ChannelId '{configuredChannelId}' is invalid. Ensure 'DiscordConfiguration:ChannelId' is a valid ulong.");
+        }
+
+        await _discord.SendMessageAsync(channelId, request.Message);
         return true;
     }
 }

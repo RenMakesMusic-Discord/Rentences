@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Rentences.Gateways.DiscordClient;
 
 namespace Rentences.Application.Handlers;
+
 public class GameStartedNotificationHandler : INotificationHandler<GameStartedNotification>
 {
     private readonly DiscordConfiguration _discordConfig;
@@ -13,17 +14,27 @@ public class GameStartedNotificationHandler : INotificationHandler<GameStartedNo
 
     public GameStartedNotificationHandler(DiscordConfiguration discordConfig, DiscordInterop discord)
     {
-        _discordConfig = discordConfig;
-        _discord = discord;
+        _discordConfig = discord ?? throw new ArgumentNullException(nameof(discordConfig));
+        _discord = discord ?? throw new ArgumentNullException(nameof(discord));
     }
 
-    public Task Handle(GameStartedNotification notification, CancellationToken cancellationToken)
+    public async Task Handle(GameStartedNotification notification, CancellationToken cancellationToken)
     {
-        // Use the discordConfig to send the start message
-        _discord.SendMessageAsync(ulong.Parse(_discordConfig.ChannelId), notification.StartMessage)
-     .GetAwaiter().GetResult();
+        // Always resolve ChannelId exclusively from DiscordConfiguration (appsettings.json binding).
+        var configuredChannelId = _discordConfig.ChannelId;
 
-        return Task.CompletedTask;
+        if (string.IsNullOrWhiteSpace(configuredChannelId))
+        {
+            throw new InvalidOperationException("Discord ChannelId is not configured. Cannot send game started notification.");
+        }
+
+        if (!ulong.TryParse(configuredChannelId, out var channelId))
+        {
+            throw new InvalidOperationException($"Discord ChannelId '{configuredChannelId}' is invalid. Cannot send game started notification.");
+        }
+
+        // Use strongly-typed configuration-based ChannelId; no overrides or fallbacks.
+        await _discord.SendMessageAsync(channelId, notification.StartMessage);
     }
 }
 

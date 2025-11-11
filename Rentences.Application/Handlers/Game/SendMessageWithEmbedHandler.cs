@@ -22,11 +22,36 @@ public class SendMessageWithEmbedHandler : IRequestHandler<SendDiscordMessageWit
         // Use the discordConfig to send the start message
         if (request.Embed is not null)
         {
-            await _discord.SendMessageAsync(ulong.Parse(_discordConfig.ChannelId), request.Embed);
+            // Always resolve ChannelId from configuration as single source of truth.
+            var configuredChannelId = _discordConfig.ChannelId;
+
+            if (string.IsNullOrWhiteSpace(configuredChannelId))
+            {
+                throw new InvalidOperationException("Discord ChannelId is not configured. Ensure 'DiscordConfiguration:ChannelId' is set in appsettings.json.");
+            }
+
+            if (!ulong.TryParse(configuredChannelId, out var channelId))
+            {
+                throw new InvalidOperationException($"Discord ChannelId '{configuredChannelId}' is invalid. Ensure 'DiscordConfiguration:ChannelId' is a valid ulong.");
+            }
+
+            await _discord.SendMessageAsync(channelId, request.Embed);
         }
         else
         {
-            await _discord.SendMessageAsync(ulong.Parse(_discordConfig.ChannelId), request.Message);
+            var configuredChannelId = _discordConfig.ChannelId;
+
+            if (string.IsNullOrWhiteSpace(configuredChannelId))
+            {
+                throw new InvalidOperationException("Discord ChannelId is not configured. Ensure 'DiscordConfiguration:ChannelId' is set in appsettings.json.");
+            }
+
+            if (!ulong.TryParse(configuredChannelId, out var channelId))
+            {
+                throw new InvalidOperationException($"Discord ChannelId '{configuredChannelId}' is invalid. Ensure 'DiscordConfiguration:ChannelId' is a valid ulong.");
+            }
+
+            await _discord.SendMessageAsync(channelId, request.Message);
         }
         return true;
     }
