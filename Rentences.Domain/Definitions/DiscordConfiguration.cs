@@ -4,7 +4,7 @@ public class DiscordConfiguration
 {
     public string Token { get; set; }
     public string ServerId { get; set; }
-    public string ChannelId { get; set; }
+    public string ChannelId { get; set; } = "1104584926520692836";
     public string Status { get; set; }
     public string StaffRoleId { get; set; }
     public Emote WinEmoji { get; set; }
