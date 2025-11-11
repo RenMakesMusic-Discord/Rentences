@@ -24,6 +24,9 @@ public class GameService : IGameService, IDisposable
     private readonly object stateLock = new object();
     private readonly IFeaturedGamemodeSelector _featuredGamemodeSelector;
 
+    // Tracks the last completed game round to prevent duplicate natural-end handling.
+    private Guid? _lastCompletedGameId;
+
     // Next game to start naturally after a completed game; consumed once.
     private Gamemodes? _nextFeaturedGamemodeOverride;
 
@@ -68,15 +71,21 @@ public class GameService : IGameService, IDisposable
         await gameLock.WaitAsync();
         try
         {
-            if (currentGame == null || disposed)
+            if (disposed)
             {
-                logger.LogWarning("[Game Service] Attempted to add message but no current game exists or service is disposed");
+                logger.LogWarning("[Game Service] Attempted to add message but service is disposed");
                 return Error.Failure("Game service is not available");
+            }
+
+            if (currentGame == null)
+            {
+                logger.LogDebug("[Game Service] No active game; ignoring message");
+                return Error.Failure("No active game");
             }
 
             if (currentGame.GameState.CurrentState != GameStatus.IN_PROGRESS)
             {
-                logger.LogWarning("[Game Service] Attempted to add message but game is not in progress");
+                logger.LogDebug("[Game Service] Game is not in progress; ignoring message");
                 return Error.Failure("Game is not in progress");
             }
 
@@ -386,6 +395,13 @@ public class GameService : IGameService, IDisposable
             // and MUST NOT start a new game.
             await currentGame.EndGame();
 
+            // Capture completed GameId for idempotency tracking.
+            var completedGameId = currentGame.GameState.GameId;
+            if (completedGameId != Guid.Empty)
+            {
+                _lastCompletedGameId = completedGameId;
+            }
+
             // Clear current game; GameState is authoritative and now ENDED.
             currentGame = null;
 
@@ -440,10 +456,29 @@ public class GameService : IGameService, IDisposable
         await gameLock.WaitAsync();
         try
         {
+            // Reject obviously invalid signals early
+            if (finalState.GameId == Guid.Empty)
+            {
+                logger.LogWarning("[Game Service] Natural end signal missing GameId; ignoring.");
+                return Error.Failure("Invalid game id");
+            }
+
+            // Idempotency: if we have already completed this GameId, ignore duplicates.
+            if (_lastCompletedGameId.HasValue && _lastCompletedGameId.Value == finalState.GameId)
+            {
+                logger.LogInformation(
+                    "[Game Service] Natural end called for already completed game {GameId}; no action taken.",
+                    finalState.GameId);
+                return true;
+            }
+
             if (currentGame == null)
             {
-                logger.LogWarning("[Game Service] Natural end called but no current game exists");
-                return Error.Failure("No active game");
+                logger.LogWarning(
+                    "[Game Service] Natural end called for GameId={GameId} but no current game exists; treating as already finalized.",
+                    finalState.GameId);
+                _lastCompletedGameId = finalState.GameId;
+                return true;
             }
 
             var activeState = currentGame.GameState;
@@ -459,10 +494,12 @@ public class GameService : IGameService, IDisposable
                 return Error.Failure("Mismatched game id");
             }
 
-            // Idempotency: if already ENDED and currentGame is null, nothing to do.
+            // If the handler already reports ENDED and we don't have a currentGame anymore,
+            // treat it as already finalized.
             if (activeState.CurrentState == GameStatus.ENDED && currentGame == null)
             {
                 logger.LogInformation("[Game Service] Natural end called but already finalized; no action taken.");
+                _lastCompletedGameId = finalState.GameId;
                 return true;
             }
 
@@ -472,13 +509,13 @@ public class GameService : IGameService, IDisposable
                 currentGame.GameState = new GameState
                 {
                     GameId = activeState.GameId == Guid.Empty
-                        ? (finalState.GameId == Guid.Empty ? Guid.NewGuid() : finalState.GameId)
+                        ? finalState.GameId
                         : activeState.GameId,
                     CurrentState = GameStatus.ENDED
                 };
             }
 
-            logger.LogInformation("[Game Service] Processing natural game end: {Message}", endMessage);
+            logger.LogInformation("[Game Service] Processing natural game end for GameId={GameId}: {Message}", finalState.GameId, endMessage);
 
             // Run the shared pipeline under the lock to end and decide next, but do NOT start it yet.
             var internalResult = await EndGameInternalAsync();
@@ -505,6 +542,7 @@ public class GameService : IGameService, IDisposable
         {
             logger.LogTrace("[Game Service] Starting next natural game after lock release: {Gamemode}", nextGamemode.Value);
 
+            // Starting next natural game must NOT be influenced by or cause further natural-end recursion.
             if (_nextFeaturedGamemodeOverride.HasValue &&
                 _nextFeaturedGamemodeOverride.Value == nextGamemode.Value)
             {

@@ -178,32 +178,39 @@ namespace Rentences.Application.Services.Game
         {
             try
             {
-                // Ensure terminal state
+                // Ensure terminal state exactly once; GameService drives what happens next.
+                if (gameStatus == GameStatus.ENDED && GameState.CurrentState == GameStatus.ENDED)
+                {
+                    _logger.LogDebug("LetterVoting.EndGame called but game already marked ENDED; skipping duplicate processing.");
+                    return;
+                }
+
                 gameStatus = GameStatus.ENDED;
                 GameState = new GameState
                 {
-                    GameId = GameState.GameId,
+                    GameId = GameState.GameId == Guid.Empty ? Guid.NewGuid() : GameState.GameId,
                     CurrentState = GameStatus.ENDED
                 };
 
                 string generatedMessage = "";
-                string preMessage = "The players have constructed the following sentence:";
+                const string preMessage = "The players have constructed the following sentence:";
                 string userTags = "";
-                List<ulong> authors = new List<ulong>();
+                var authors = new List<ulong>();
                 LastSenderId = ulong.MinValue;
 
                 generatedMessage = string.Empty;
                 userTags = ">>> ";
 
-                foreach (Word word in WordList.OrderBy(w => w.TimeStamp)) {
-                    generatedMessage += (" " + word.Value);
+                foreach (var word in WordList.OrderBy(w => w.TimeStamp))
+                {
+                    generatedMessage += " " + word.Value;
 
                     if (authors.Contains(word.Author))
                         continue;
 
                     authors.Add(word.Author);
 
-                    List<Word>? topWord = _wordService.GetTopWordsByUser(word.Author, 1)?.ToList();
+                    var topWord = _wordService.GetTopWordsByUser(word.Author, 1)?.ToList();
                     var totalContributions = await _wordService.GetTotalWordsAddedByUserAsync(word.Author);
 
                     string topWordInfo = topWord != null && topWord.Any()
@@ -235,6 +242,10 @@ namespace Rentences.Application.Services.Game
                     .Build();
 
                 // Emit standardized game ended notification with the final embed.
+                // GameService.EndGameFromNaturalFlowAsync will:
+                // - Validate GameId
+                // - Ensure idempotency using _lastCompletedGameId
+                // - End the game under gameLock and start the next one after release.
                 var endMessage = embed.Description ?? "Letters game finished.";
                 await _mediator.Send(new GameEndedNotification(GameState, endMessage));
             }
