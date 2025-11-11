@@ -79,13 +79,13 @@ public class GameService : IGameService, IDisposable
 
             if (currentGame == null)
             {
-                logger.LogDebug("[Game Service] No active game; ignoring message");
+                // No active game; ignore without blocking the gateway.
                 return Error.Failure("No active game");
             }
 
             if (currentGame.GameState.CurrentState != GameStatus.IN_PROGRESS)
             {
-                logger.LogDebug("[Game Service] Game is not in progress; ignoring message");
+                // Game exists but not in progress; ignore safely.
                 return Error.Failure("Game is not in progress");
             }
 
@@ -202,39 +202,61 @@ public class GameService : IGameService, IDisposable
     }
 
     /// <summary>
-    /// Start a game with force termination of any existing game
+    /// Start a game with force termination of any existing game.
+    /// This is the ONLY entry point for starting a new round.
+    /// Always:
+    /// - Ends any active game (once).
+    /// - Clears currentGame.
+    /// - Starts the requested mode.
     /// </summary>
     public async Task StartGameWithForceTerminationAsync([Required] Gamemodes gameMode, string reason = "User requested new game")
     {
         await gameLock.WaitAsync();
         try
         {
-            logger.LogInformation($"[Game Service] Starting game with force termination. Mode: {gameMode}, Reason: {reason}");
-            
-            // Force terminate any existing game immediately
+            logger.LogInformation("[Game Service] Starting game with force termination. Mode: {Mode}, Reason: {Reason}", gameMode, reason);
+
+            // Always ensure previous round is fully torn down.
             if (currentGame != null)
             {
                 await ForceTerminateCurrentGameInternal(reason);
             }
 
-            // Staff/admin explicit override cancels any pending featured gamemode
+            // Any explicit start (including staff) cancels pending featured override.
             _nextFeaturedGamemodeOverride = null;
 
-            // Start the new game
-            currentGame = games[gameMode];
-            if (currentGame != null)
+            // Reset last-completed tracking when a brand new game is explicitly started.
+            // This keeps semantics simple: each StartGameWithForceTerminationAsync creates a new logical round.
+            _lastCompletedGameId = null;
+
+            if (!games.TryGetValue(gameMode, out var nextHandler) || nextHandler is null)
             {
-                await currentGame.StartGame();
-                logger.LogInformation($"[Game Service] Successfully started new game: {gameMode}");
+                logger.LogError("[Game Service] Failed to get game handler for mode: {Mode}", gameMode);
+                currentGame = null;
+                return;
             }
-            else
+
+            currentGame = nextHandler;
+
+            await currentGame.StartGame();
+
+            if (currentGame.GameState.GameId == Guid.Empty)
             {
-                logger.LogError($"[Game Service] Failed to get game handler for mode: {gameMode}");
+                // Guarantee a valid GameId for single-server/single-channel orchestration.
+                currentGame.GameState = new GameState
+                {
+                    GameId = Guid.NewGuid(),
+                    CurrentState = GameStatus.IN_PROGRESS
+                };
             }
+
+            logger.LogInformation("[Game Service] Successfully started new game: {Mode} (GameId={GameId})",
+                gameMode, currentGame.GameState.GameId);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, $"[Game Service] Error starting game {gameMode} with force termination");
+            logger.LogError(ex, "[Game Service] Error starting game {Mode} with force termination", gameMode);
+            currentGame = null;
             throw;
         }
         finally
@@ -542,7 +564,9 @@ public class GameService : IGameService, IDisposable
         {
             logger.LogTrace("[Game Service] Starting next natural game after lock release: {Gamemode}", nextGamemode.Value);
 
-            // Starting next natural game must NOT be influenced by or cause further natural-end recursion.
+            // Always start via the single entry point; this will:
+            // - respect that previous game is fully ended
+            // - start the next game for our single server/channel
             if (_nextFeaturedGamemodeOverride.HasValue &&
                 _nextFeaturedGamemodeOverride.Value == nextGamemode.Value)
             {
